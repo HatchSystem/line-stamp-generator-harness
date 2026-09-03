@@ -31,6 +31,14 @@ def _parse_finite_float(value: str) -> float:
     return result
 
 
+def _parse_bounded_int(value: str) -> int:
+    """Bound integer text before conversion to avoid interpreter-limit tracebacks."""
+    digits = value.lstrip("-")
+    if len(digits) > 1000:
+        raise json.JSONDecodeError("JSON integer exceeds 1000 digits", value, 0)
+    return int(value)
+
+
 def loads_no_duplicates(text: str):
     """Parse RFC 8259 JSON, rejecting duplicate keys at every object depth."""
     return json.loads(
@@ -38,4 +46,5 @@ def loads_no_duplicates(text: str):
         object_pairs_hook=_object_without_duplicates,
         parse_constant=_reject_non_finite_number,
         parse_float=_parse_finite_float,
+        parse_int=_parse_bounded_int,
     )

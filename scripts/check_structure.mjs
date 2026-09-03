@@ -68,6 +68,7 @@ const PYTHON_EXTERNAL_MODULES = new Set([
   "re",
   "runpy",
   "shutil",
+  "stat",
   "subprocess",
   "sys",
   "tempfile",
