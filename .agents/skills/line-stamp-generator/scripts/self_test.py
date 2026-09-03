@@ -60,6 +60,7 @@ from project import (
     valid_slug,
 )
 from project_context import FACADE_PROJECT_ENV, enforce_facade_project
+from session_contract import load_static_session
 from validate_pack import validate_png, validate_zip
 from verify_text import next_version, verification_scope, verification_session
 import transaction_utils
@@ -449,6 +450,7 @@ def main() -> None:
             "- count: 8\n"
             "- text: yes\n"
             "- text_mode: ai\n"
+            "- text_check: not-run\n"
             "- gate: P5\n",
             encoding="utf-8",
         )
@@ -522,6 +524,18 @@ def main() -> None:
 
         verification_values, verification_errors = verification_session(project)
         assert not verification_errors and verification_values["count"] == "8"
+        assert load_static_session(project, {"P5"})["text_mode"] == "ai"
+        p5_session_source = (project / "SESSION.md").read_text(encoding="utf-8")
+        (project / "SESSION.md").write_text(
+            p5_session_source.replace("- gate: P5", "- gate: P6"), encoding="utf-8"
+        )
+        try:
+            load_static_session(project, {"P6"})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("P6 AI session accepted text_check=not-run")
+        (project / "SESSION.md").write_text(p5_session_source, encoding="utf-8")
         assert verification_scope(verification_values, set(range(1, 9)), None) == set(
             range(1, 9)
         )
