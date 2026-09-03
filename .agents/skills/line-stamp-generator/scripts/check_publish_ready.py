@@ -26,6 +26,7 @@ SESSION_SCHEMA_VERSION = "2"
 SUBMISSION_SCHEMA_VERSION = 2
 PROJECT_SLUG_RE = re.compile(r"[a-z0-9][a-z0-9-]{1,39}")
 WINDOWS_RESERVED_NAMES = {
+    "ACTIVE",
     "CON",
     "PRN",
     "AUX",

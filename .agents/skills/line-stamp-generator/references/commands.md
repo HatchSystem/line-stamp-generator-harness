@@ -12,7 +12,7 @@ python scripts/line_stamp.py project --root . use usagi
 python scripts/line_stamp.py project --root . status
 ```
 
-`new` は `^[a-z0-9][a-z0-9-]{1,39}$`（2〜40文字、先頭は英小文字または数字）に合う実名でない slug で、隔離された `gate: P0` のプロジェクトを作る。既存 slug は拒否される。素材をその `refs/` へ置き、P0 の全回答を復唱して承認を得てから `confirm-p0` を実行する。このコマンドは `refs/` 直下の通常ファイルと、`source`、枚数、文字状態、表示名、候補数、申請意図、素材利用権、写真の成年・本人許諾を一括検証・保存し、矛盾がなければ `gate: P1` へ進める。既存キャラクターでは `--adult n/a --consent n/a`、文字なしでは `--text no --text-mode none` を指定する。
+`new` は `^[a-z0-9][a-z0-9-]{1,39}$`（2〜40文字、先頭は英小文字または数字）に合う実名でない slug で、隔離された `gate: P0` のプロジェクトを作る。Windows の予約デバイス名とハーネス予約名 `active` は使えず、既存 slug も拒否される。素材をその `refs/` へ置き、P0 の全回答を復唱して承認を得てから `confirm-p0` を実行する。このコマンドは `refs/` 直下の通常ファイルと、`source`、枚数、文字状態、表示名、候補数、申請意図、素材利用権、写真の成年・本人許諾を一括検証・保存し、矛盾がなければ `gate: P1` へ進める。既存キャラクターでは `--adult n/a --consent n/a`、文字なしでは `--text no --text-mode none` を指定する。
 
 旧 v1 プロジェクトは対象を `use` してから診断する。最初のコマンドは dry-run で、2つ目だけがバックアップ作成後に書き込む。欠落した `materials` は、P0 なら `pending`、P1 以降なら `refs/` の読取可能な非空素材を確認できたときだけ `received` にする。権利、許諾、ゲート、承認状態は変更しない。
 

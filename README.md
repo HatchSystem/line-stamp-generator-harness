@@ -99,6 +99,8 @@ python scripts/line_stamp.py project --root . use usagi
 python scripts/line_stamp.py project --root . status
 ```
 
+slug は小文字英数字とハイフンの2〜40文字で、実名、Windows の予約デバイス名、ハーネス予約名 `active` を使いません。
+
 画像処理、文字検査、確認一覧、梱包、公開前検査の全コマンドは [commands.md](.agents/skills/line-stamp-generator/references/commands.md) を参照してください。スキル内部の `.py` は直接実行しません。公開 CLI は `projects/ACTIVE` と実処理パスがこのリポジトリの同じプロジェクトを指すことを検証し、ACTIVE の変更と同一プロジェクトの状態・成果物更新を協調ロックで直列化します。別エージェントが更新中なら失敗終了するため、完了後に再実行してください。
 
 ### 旧プロジェクトの移行

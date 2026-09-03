@@ -325,6 +325,7 @@ def main() -> None:
         sink = StringIO()
         assert valid_slug("intake")
         assert not valid_slug("con")
+        assert not valid_slug("active")
         assert not valid_slug("demo\n")
         with redirect_stdout(sink), redirect_stderr(sink):
             assert cmd_new(Namespace(root=str(root), slug="con")) == 1

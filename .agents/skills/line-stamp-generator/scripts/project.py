@@ -31,6 +31,7 @@ from transaction_utils import LockUnavailableError, exclusive_lock
 ALLOWED_COUNTS = (8, 16, 24, 32, 40)
 SLUG_RE = re.compile(r"[a-z0-9][a-z0-9-]{1,39}")
 WINDOWS_RESERVED_NAMES = {
+    "ACTIVE",
     "CON",
     "PRN",
     "AUX",

@@ -3,6 +3,7 @@ import path from "node:path";
 
 const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{1,39}$/;
 const WINDOWS_RESERVED_NAMES = new Set([
+  "ACTIVE",
   "CON", "PRN", "AUX", "NUL",
   ...Array.from({ length: 9 }, (_, index) => `COM${index + 1}`),
   ...Array.from({ length: 9 }, (_, index) => `LPT${index + 1}`),
