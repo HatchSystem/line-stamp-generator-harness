@@ -269,6 +269,12 @@ def main() -> None:
             pass
         else:
             raise AssertionError(f"non-standard JSON number was accepted: {non_finite}")
+    try:
+        loads_no_duplicates('{"value": ' + ("9" * 1001) + "}")
+    except json.JSONDecodeError:
+        pass
+    else:
+        raise AssertionError("oversized JSON integer was accepted")
 
     visibility_errors: list[str] = []
     check_store_visibility(
@@ -305,6 +311,10 @@ def main() -> None:
     assert errors
     _, _, errors = migrated_submission(
         {"private": False, "sales_start": "automatic"}
+    )
+    assert errors
+    _, _, errors = migrated_submission(
+        {"schema_version": "9" * 1000, "sales_start": "manual", "store_visibility": "public"}
     )
     assert errors
 
