@@ -29,7 +29,7 @@ python scripts/line_stamp.py project --root . migrate --apply
 python scripts/line_stamp.py preprocess-character projects/usagi/raw/stamp01.png projects/usagi/characters/stamp01.png --remove-light-background --outline 10
 ```
 
-`text_mode: ai`（文字が生成画像に焼き込まれている）では穴補正が文字のカウンターを埋めるため `--no-fill-holes` を付ける。白縁はこの指定の有無にかかわらず外周だけへ追加され、元画像内の閉じた透明領域は変更しない。
+`text_mode: ai`（文字が生成画像に焼き込まれている）では穴補正が文字のカウンターを埋めるため `--no-fill-holes` を付ける。`font|none` では付けない。公開 CLI はこの指定、stamp ID、P4/P5、SESSION の枚数・文字方式を照合する。白縁はこの指定の有無にかかわらず外周だけへ追加され、元画像内の閉じた透明領域は変更しない。
 
 ```powershell
 python scripts/line_stamp.py preprocess-character projects/usagi/raw/stamp01.png projects/usagi/characters/stamp01.png --remove-light-background --outline 10 --no-fill-holes
@@ -40,6 +40,8 @@ python scripts/line_stamp.py preprocess-character projects/usagi/raw/stamp01.png
 ## 文字合成
 
 [static-manifest.example.json](../assets/static-manifest.example.json) を `projects/usagi/manifest.json` へコピーし、`text_mode`、フォント、色、セリフ、キャラクター画像を設定する。`font` を使う場合は、利用許諾を確認した日本語フォントを `projects/usagi/fonts/` に置く。manifest 内の相対パスは manifest のあるディレクトリを基準に解決される。`items[].text` は両方式で承認済みセリフを一字一句そのまま書く（`ai` では検査の正解として使う）。
+
+manifest の `style.text_mode` は SESSION と一致させる。P4 の合成は item 01 だけ、P5 は ID が `1..SESSION count` と完全一致する全点だけを受け付ける。
 
 `text_mode: font` では文字レイヤーを保存するため `--text-layer-dir` が必須である。
 
@@ -91,7 +93,7 @@ python scripts/line_stamp.py package-static --stamps projects/usagi/stamps --cha
 python scripts/line_stamp.py validate-pack --dir projects/usagi/submit --count 16 --character-dir projects/usagi/character-layers --zip projects/usagi/submit/line-stamp-submit.zip
 ```
 
-`self-test` が PASS し、`validate-pack` が `errors=0` の場合だけ P6 を完了する。
+P5 承認後に SESSION を P6 へ進めてから梱包・検証する。`package-static --count` と `validate-pack --count/--text-mode` は SESSION と完全一致させる。`text_mode: ai` は全点の OCR・エージェント読上げ・ユーザー目視承認を終えた `text_check: ok` でなければ P6 処理を開始できない。`self-test` が PASS し、`validate-pack` が `errors=0` の場合だけ P6 を完了する。
 
 `package-static` は `submit/` 配下の同一 filesystem 上に一時成果物を完成させてから、管理対象の `main.png` `tab.png` `stampNN.png` と指定 ZIP だけを置換する。無関係なファイルやサブディレクトリを削除しない。旧枚数の `stampNN.png` が残っていれば `validate-pack` が余剰として止めるため、エージェントは削除せずユーザーへ報告する。
 
@@ -101,7 +103,7 @@ python scripts/line_stamp.py validate-pack --dir projects/usagi/submit --count 1
 
 ## 公開前チェック
 
-[submission.example.json](../assets/submission.example.json) を `projects/usagi/meta/submission.json` へコピーして埋め、SESSION と ZIP を合わせて検査する。AI を使用した場合は [ai-provenance.example.md](../assets/ai-provenance.example.md) を基に `projects/usagi/meta/ai-provenance.md` を作り、利用ツール、生成日、承認済みプロンプトまたはその保存先を記録する。販売エリア、対象国、AI/写真使用、ライセンス証明、LINEスタンプ プレミアム参加は既定値を黙認せず、ユーザーが選んだ値を保存する。価格は現在の登録画面から選んだ正の `price_jpy` を復唱し、ユーザー確認後だけ `price_confirmed: true` にする。
+[submission.example.json](../assets/submission.example.json) を `projects/usagi/meta/submission.json` へコピーして埋め、SESSION と ZIP を合わせて検査する。AI を使用した場合は [ai-provenance.example.md](../assets/ai-provenance.example.md) を基に `projects/usagi/meta/ai-provenance.md` を作り、利用ツール、生成日、承認済みプロンプトまたはその保存先を記録する。SESSION が `text_mode: ai` なら `ai_used: true` と provenance の `scope: text` が必須である。販売エリア、対象国、AI/写真使用、ライセンス証明、LINEスタンプ プレミアム参加は既定値を黙認せず、ユーザーが選んだ値を保存する。価格は現在の登録画面から選んだ正の `price_jpy` を復唱し、ユーザー確認後だけ `price_confirmed: true` にする。
 
 ```powershell
 python scripts/line_stamp.py check-publish-ready --session projects/usagi/SESSION.md --submission projects/usagi/meta/submission.json --zip projects/usagi/submit/line-stamp-submit.zip
