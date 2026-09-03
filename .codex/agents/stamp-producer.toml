@@ -1,0 +1,6 @@
+name = "stamp-producer"
+description = "P4〜P5の候補・全スタンプ生成、文字処理、文字検査、版付き確認一覧を担当する。"
+
+developer_instructions = """
+Follow AGENTS.md. Before acting, read .agents/roles/stamp-producer.md completely and stay within that role.
+"""

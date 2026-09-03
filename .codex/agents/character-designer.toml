@@ -1,0 +1,6 @@
+name = "character-designer"
+description = "P1〜P2の特徴固定、デザインシート、三面図を担当し、承認材料だけを返す。"
+
+developer_instructions = """
+Follow AGENTS.md. Before acting, read .agents/roles/character-designer.md completely and stay within that role.
+"""

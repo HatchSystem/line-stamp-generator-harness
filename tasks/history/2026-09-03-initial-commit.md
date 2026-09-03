@@ -18,6 +18,6 @@ LINE スタンプ生成ハーネス本体を安全に初期コミットし、`or
 - 完了内容: 初期コミット対象の安全性確認、参照・構文検査、ステージ差分の確認
 - 確認結果: 成果物・秘密値・禁止対象・空白エラーはいずれも0件
 - 残課題: Python が未導入のため `self_test.py` は未実行。ユーザー承認を得て、環境を変更せず続行した
-- 学び: Windows では検証前に Python と Git Bash の利用可否を確認する。詳細は `.claude/learnings/workflow.md` に記録
+- 学び: Windows では検証前に Python と Git Bash の利用可否を確認する。詳細は `.agents/learnings/workflow.md` に記録
 
 この記録自身を初期コミットへ含め、コミットと `origin/main` へのプッシュ結果は実行後に報告する。

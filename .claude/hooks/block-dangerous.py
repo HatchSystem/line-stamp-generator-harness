@@ -1,51 +1,30 @@
 #!/usr/bin/env python3
-"""PreToolUse hook for Bash: deny destructive commands and photo leakage into submit ZIPs.
-
-Reads the official hook JSON from stdin. Prints a JSON decision. Fails open on malformed input
-(exit 0, no output) so the hook never breaks a session because of its own bug.
-"""
+"""Claude compatibility wrapper for the vendor-neutral PreToolUse policy."""
 from __future__ import annotations
 
-import json
-import re
+import os
+import subprocess
 import sys
-
-DENY_PATTERNS = (
-    (r"\brm\s+(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)\b", "rm -rf は禁止。不要ファイルは tmp/ へ移動して報告する"),
-    (r"\brm\s+-[a-zA-Z]*r[a-zA-Z]*\s+.*\b(projects|submit)\b", "projects/ submit/ の再帰削除は禁止"),
-    (r"\bgit\s+push\b.*(--force\b|-f\b|--force-with-lease\b)", "git push --force は禁止"),
-    (r"\bgit\s+(reset\s+--hard|clean\s+-[a-zA-Z]*f)", "git reset --hard / git clean -f は禁止"),
-    (r"\bmkfs\b|\bdd\s+if=", "ディスク破壊コマンドは禁止"),
-    (r"\bzip\b.*\b(raw|refs|review|SESSION\.md|three-view|meta|plan\.md)\b", "提出ZIPに写真・三面図・レビュー・SESSION・メタを入れない"),
-    (r"\bchmod\s+-R\s+777\b", "chmod -R 777 は禁止"),
-)
+from pathlib import Path
 
 
 def main() -> None:
+    root = Path(os.environ.get("CLAUDE_PROJECT_DIR", Path(__file__).resolve().parents[2]))
+    hook = root / "scripts" / "hooks" / "pre_tool_use.mjs"
     try:
-        payload = json.load(sys.stdin)
-    except Exception:
-        return
-    if payload.get("tool_name") not in (None, "Bash"):
-        return
-    command = str(payload.get("tool_input", {}).get("command", ""))
-    if not command:
-        return
-    for pattern, reason in DENY_PATTERNS:
-        if re.search(pattern, command):
-            print(
-                json.dumps(
-                    {
-                        "hookSpecificOutput": {
-                            "hookEventName": "PreToolUse",
-                            "permissionDecision": "deny",
-                            "permissionDecisionReason": f"[block-dangerous] {reason}: {command[:120]}",
-                        }
-                    },
-                    ensure_ascii=False,
-                )
-            )
-            return
+        result = subprocess.run(
+            ["node", str(hook), "claude"],
+            input=sys.stdin.buffer.read(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except OSError as exc:
+        print(f"[claude-hook-wrapper] {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+    sys.stdout.buffer.write(result.stdout)
+    sys.stderr.buffer.write(result.stderr)
+    raise SystemExit(result.returncode)
 
 
 if __name__ == "__main__":

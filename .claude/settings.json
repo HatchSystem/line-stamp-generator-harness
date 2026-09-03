@@ -1,14 +1,14 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python3 .claude/skills/line-stamp-generator/scripts/*)",
-      "Bash(python .claude/skills/line-stamp-generator/scripts/*)",
-      "Bash(pip install -r requirements.txt*)",
+      "Bash(python scripts/line_stamp.py *)",
+      "Bash(python3 scripts/line_stamp.py *)",
+      "Bash(node scripts/check_structure.mjs)",
+      "Bash(node scripts/hooks/self_test.mjs)",
       "Bash(unzip -l *)",
       "Bash(ls *)",
       "Bash(git status*)",
-      "Bash(git diff*)",
-      "Bash(bash scripts/check-refs.sh)"
+      "Bash(git diff*)"
     ],
     "deny": [
       "Bash(rm -rf *)",
@@ -26,6 +26,16 @@
         "hooks": [
           {
             "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/hooks/project_context.mjs\" claude session \"$CLAUDE_PROJECT_DIR\"",
+            "timeout": 10,
+            "statusMessage": "プロジェクト状態を確認中"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
             "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.sh"
           }
         ]
@@ -33,11 +43,22 @@
     ],
     "PreToolUse": [
       {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/hooks/pre_tool_use.mjs\" claude",
+            "timeout": 10,
+            "statusMessage": "共通の安全ポリシーを確認中"
+          }
+        ]
+      },
+      {
         "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/block-dangerous.py",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-python-wrapper.mjs\" block-dangerous",
+            "timeout": 10,
             "statusMessage": "破壊的コマンドを検査中"
           }
         ]
@@ -47,13 +68,23 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/guard-submit.py",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-python-wrapper.mjs\" guard-submit",
+            "timeout": 10,
             "statusMessage": "不可逆操作を検査中"
           }
         ]
       }
     ],
     "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/scripts/hooks/project_context.mjs\" claude prompt \"$CLAUDE_PROJECT_DIR\"",
+            "timeout": 10
+          }
+        ]
+      },
       {
         "hooks": [
           {

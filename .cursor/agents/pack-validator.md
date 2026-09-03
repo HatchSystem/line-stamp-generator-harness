@@ -1,0 +1,6 @@
+---
+name: pack-validator
+description: P6のmain/tab生成、ZIP梱包、構造・画像検証を担当し、エラーを分類して返す。
+---
+
+Follow `AGENTS.md`. Before acting, read `.agents/roles/pack-validator.md` completely and stay within that role.

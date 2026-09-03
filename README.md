@@ -1,95 +1,127 @@
 # line-stamp-generator-harness
 
-人物写真のキャラクター化、または既存オリジナルキャラクターのデザイン踏襲で、静止画 LINE スタンプを AI エージェントと対話しながら制作し、LINE Creators Market の登録入力まで進めるためのハーネスです。ハーネス本体と制作物を分けたモノレポ構成で、複数のスタンプをプロジェクト単位で並行して制作できます。
+Claude Code、Codex、Cursor などの AI エージェントから、同じ手順と安全要件で静止画 LINE スタンプを制作するためのハーネスです。人物写真のキャラクター化、または権利を持つオリジナルキャラクターのデザイン踏襲から、検証済み ZIP、申請メタ、LINE Creators Market の登録入力までを P0〜P9 の承認ゲートで進めます。
 
-## 設計思想
+「審査をリクエスト」と「リリース」はエージェントではなく、ユーザー本人が行います。
 
-1. **ハーネスと制作物の分離**: `AGENTS.md` `.claude/` `scripts/` がハーネス本体。制作物は `projects/<slug>/` に隔離し、制作中にハーネスを壊さない
-2. **単一情報源**: 行動規範は `AGENTS.md` に一元化。`CLAUDE.md` は Claude Code 用アダプタで、`@AGENTS.md` を読み込むだけ
-3. **指示は文書、強制は hooks**: 「守ってほしいこと」は Markdown、「必ず守らせること」（破壊的コマンド、審査リクエスト・リリースのクリック、認証情報の入力、プロジェクト未選択での制作開始）は hooks で機械的に扱う
-4. **選択肢で進める**: 選べる項目はエージェントが選択肢を提示し、ユーザーは選ぶだけ
-5. **不可逆操作はユーザーが行う**: 「審査をリクエスト」「リリース」はユーザー本人が押す
-6. **学びの蓄積**: ミス・仕様差異・審査却下理由を `.claude/learnings/` に記録し共有
+## 設計
 
-## フォルダ構成
+- **Portable core** — `AGENTS.md` と `.agents/` が唯一の共通正本です。ワークフロー、参照資料、実装、役割、学びを製品別ディレクトリへ複製しません
+- **Thin adapters** — `.claude/` `.codex/` `.cursor/` には各製品が正本を発見・実行するための最小設定だけを置きます
+- **Stable entry points** — Python 実装の物理パスを外部へ漏らさず、`scripts/line_stamp.py` から呼びます
+- **Isolated projects** — 1つのスタンプセット（1申請パッケージ）を `projects/<slug>/` に隔離し、`SESSION.md` と `projects/ACTIVE` で再開可能にします。写真や提出物は Git 管理しません
+- **Defense in depth** — `AGENTS.md` の禁止事項を第一の境界とし、利用可能な環境では共通 hook でも破壊的・不可逆操作を止めます
+- **Verified structure** — リンク、正本とアダプタの依存方向、役割集合、設定構文を Node の検査で継続的に確認します
 
-```
-line-stamp-generator-harness/
-├── AGENTS.md                      # 単一情報源: 目的・原則・P0〜P9・品質基準・禁止事項
-├── CLAUDE.md                      # Claude Code アダプタ（@AGENTS.md + 読み込みマップ + 固有運用）
-├── README.md / requirements.txt / .gitignore / .env.example
-├── .claude/                       # ハーネス本体
-│   ├── settings.json              # permissions + hooks
-│   ├── settings.local.json.example
-│   ├── hooks/
-│   │   ├── session-start.sh       # SessionStart: プロジェクト一覧と ACTIVE を注入
-│   │   ├── gate-reminder.sh       # UserPromptSubmit: 選択中プロジェクトの現在ゲートを注入
-│   │   ├── block-dangerous.py     # PreToolUse(Bash): rm -rf, force push, projects/ 削除, ZIP への写真混入
-│   │   └── guard-submit.py        # PreToolUse(MCP): 審査リクエスト・リリース・削除のクリック、認証情報入力
-│   ├── rules/                     # 常時読み込みルール
-│   ├── agents/                    # サブエージェント（character-designer / stamp-producer / pack-validator / publisher）
+## 構成
+
+```text
+.
+├── AGENTS.md                         # 全エージェント共通の入口・安全規約
+├── CLAUDE.md                         # Claude Code の薄い読み込みアダプタ
+├── .agents/                          # ベンダー中立な正本
 │   ├── skills/
-│   │   ├── line-stamp-generator/  # 制作本体: SKILL.md + references + scripts（project.py を含む）
-│   │   ├── plan/                  # /plan → tasks/todo.md
-│   │   └── review/                # /review → ルール適合レビュー
-│   ├── learnings.md               # 学びの索引
-│   └── learnings/
-├── scripts/check-refs.sh          # ドキュメント参照パスの整合チェック
-├── tasks/                         # todo.md（.gitignore）・todo.md.template・history/・subagents/
-└── projects/                      # 制作物（.gitignore）
-    ├── README.md
-    ├── ACTIVE                     # 選択中の slug
-    └── <slug>/                    # SESSION.md / plan.md / refs / raw / ... / submit / meta
+│   │   ├── line-stamp-generator/     # SKILL.md、references、assets、Python 実装
+│   │   ├── plan/
+│   │   └── review/
+│   ├── roles/                        # 4つの役割本文
+│   └── learnings/                    # チーム共有の索引・知見・記録方針
+├── .claude/                          # commands、agents、settings/hooks アダプタ
+├── .codex/                           # agents、hooks アダプタ
+├── .cursor/                          # agents、hooks アダプタ
+├── scripts/
+│   ├── line_stamp.py                 # 安定した公開 CLI
+│   ├── check_structure.mjs           # 構成・参照・境界検査
+│   └── hooks/                        # 共通ポリシーと製品別出力アダプタ
+├── tasks/                            # ハーネス変更の計画・履歴
+└── projects/<slug>/                  # SESSION、素材、生成物、review、submit、meta
 ```
 
-## セットアップ
+依存方向は常に「製品別アダプタ → `AGENTS.md` / `.agents/` / `scripts/`」です。`.agents/` から `.claude/` `.codex/` `.cursor/` を参照しません。Windows でも扱いやすいよう、symlink は使いません。
 
-```bash
-pip install -r requirements.txt
-# 生成AIで文字を入れる場合のみ（OCR 照合）: tesseract 本体と日本語データも必要
-pip install pytesseract
-cp .env.example .env                                   # 任意
-cp .claude/settings.local.json.example .claude/settings.local.json   # 任意
-bash scripts/check-refs.sh                             # 参照整合性
-python3 .claude/skills/line-stamp-generator/scripts/self_test.py     # PASS が出れば OK
+## 対応環境
+
+| エージェント | 共通指示・スキル | 製品別アダプタ |
+|---|---|---|
+| Claude Code | `CLAUDE.md` の `@AGENTS.md` と `.agents/skills/` | `.claude/commands/`、`.claude/agents/`、`.claude/settings.json` と共通 hook への互換ラッパー |
+| Codex | `AGENTS.md` と `.agents/skills/` | `.codex/agents/*.toml`、`.codex/hooks.json` |
+| Cursor | `AGENTS.md` と `.agents/skills/` | `.cursor/agents/`、`.cursor/hooks.json` |
+| その他 | `AGENTS.md` を入口に `.agents/skills/` を直接読む | 必要な場合だけ薄いアダプタを追加 |
+
+hook の有効化や信頼確認は各ツール側の仕様に従います。hook が使えない環境でも `AGENTS.md` の禁止事項は変わりません。
+
+## 必要環境
+
+- Python 3.10 以上と `requirements.txt` の依存関係（画像処理・プロジェクト CLI）
+- Node.js 18 以上（構成検査と共通 hook）
+- `text_mode: ai` で OCR を使う場合のみ、Tesseract、日本語データ、`pytesseract`
+- P1〜P5 には画像を参照・生成または編集できるエージェント機能、P8 にはログイン済みページを扱えるブラウザ機能
+
+`python` というコマンド名は環境により `python3` または `py` に読み替えてください。
+
+画像機能がない場合はユーザーが用意した画像を各ゲートで確認し、画像生成工程を完了したことにしません。ブラウザ機能がない場合は P8 の入力チェックリストと値を提示し、ユーザーが入力します。どちらの場合も承認ゲートと不可逆操作の境界は維持します。
+
+## セットアップと検証
+
+リポジトリルートで実行します。
+
+```powershell
+python -m pip install -r requirements.txt
+node scripts/check_structure.mjs
+node scripts/hooks/self_test.mjs
+python scripts/line_stamp.py self-test
 ```
 
-hooks の動作確認:
+期待結果は各検査の `PASS` です。Python がまだ導入されていない環境でも、Node による構成・hook 検査は独立して実行できます。
 
-```bash
-echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf projects"}}' | python3 .claude/hooks/block-dangerous.py
-echo '{"tool_name":"mcp__browser__click","tool_input":{"element":"審査をリクエスト","url":"https://creator.line.me/"}}' | python3 .claude/hooks/guard-submit.py
-CLAUDE_PROJECT_DIR=. bash .claude/hooks/session-start.sh
-```
-
-前2つは `"permissionDecision": "deny"` を含む JSON、3つ目はプロジェクト一覧が出れば正常です。
+依存関係のインストールはエージェントへ自動許可していません。内容を確認したユーザーが上のコマンドを実行してください。秘密情報は `.env` や個人設定に置き、リポジトリへコミットせず、エージェントにも読み取らせません。
 
 ## 使い方
 
-1. Claude Code をリポジトリのルートで起動し、「この写真でLINEスタンプを作りたい」などと依頼する
-2. 進行中のプロジェクトがあれば「続ける / 別を選ぶ / 新規作成」の選択肢が出るので選ぶ
-3. 新規なら P0 の質問（素材の種類・枚数・文字・文字の入れ方・キャラ名・公開予定）に選択肢で答える。文字の入れ方は「埋め込みフォント（推奨・誤字ゼロ）」か「生成AI（手書き風など。誤字検査あり）」。エージェントが `projects/<slug>/` を作る
-4. P1〜P7 で特徴ロック → 三面図 → セリフ表 → stamp01 → 全点 → 検証 → メタ案を順に承認する。生成AIで文字を入れる場合は stamp01 と全点の段階で「OCR 照合 → エージェントが各画像の文字を読み上げ → あなたが『全点正しい / 誤字あり』を選ぶ」検査が入る
-5. P8 でエージェントが Creators Market に登録入力し、サマリを提示して止まる。内容を確認して**自分で**「審査をリクエスト」を押す
-6. 承認されたら**自分で**「リリース」を押す。却下ならエージェントが理由を分類して該当ゲートへ戻る
+1. 対応する AI エージェントをリポジトリルートで起動し、「この写真で LINE スタンプを作りたい」などと依頼します
+2. 進行中のプロジェクトがあれば「続ける / 別を選ぶ / 新規作成」から選びます
+3. 新規なら隔離された P0 プロジェクトを先に作って素材を `refs/` に置き、P0 で素材利用権、写真の本人許諾/成年、枚数、セリフ、文字方式、候補数、LINE への申請意図を確定します。`confirm-p0` が一括保存して P1 へ進めます
+4. P1〜P5 で特徴ロック、三面図、セリフ表、`stamp01`、全点と確認一覧を順に承認します
+5. P6 で画像とZIPの検証を通します。`publish: yes` の場合だけ P7 へ進み、申請メタを検証・承認します。`local-only` は P6 で終了します
+6. P8 で登録内容のサマリを確認し、自分で同意事項を読んで「同意します」を選び、「審査をリクエスト」を押します。承認後の「リリース」も自分で押します
 
-別のスタンプを作るときは新規プロジェクトを作るだけです。既存プロジェクトの画像や SESSION には影響しません。
+`text_mode: font` は生成画像と文字を分離し、フォントで決定論的に合成する推奨方式です。`text_mode: ai` は生成AIに文字を描かせるため、P4 と P5 で「OCR → エージェントの目視読み上げ → ユーザー確認」を必須にします。
 
-ログインは自分で済ませ、ログイン済みの画面をエージェントに渡してください。エージェントは ID・パスワード・認証コードを入力しません。
+ログインはユーザー自身で済ませてください。エージェントは ID、パスワード、認証コードを入力しません。
 
-## プロジェクト管理コマンド
+## プロジェクト管理
 
-```bash
-python3 .claude/skills/line-stamp-generator/scripts/project.py list
-python3 .claude/skills/line-stamp-generator/scripts/project.py new --slug usagi --source photo --count 16 --text yes
-python3 .claude/skills/line-stamp-generator/scripts/project.py use usagi
-python3 .claude/skills/line-stamp-generator/scripts/project.py status
+```powershell
+python scripts/line_stamp.py project --root . list
+python scripts/line_stamp.py project --root . new --slug usagi
+python scripts/line_stamp.py project --root . confirm-p0 --materials received --source photo --count 16 --text yes --text-mode font --character-name ハッチくん --sample-candidates 1 --publish yes --rights own --adult yes --consent yes
+python scripts/line_stamp.py project --root . use usagi
+python scripts/line_stamp.py project --root . status
 ```
 
-## 他の AI エージェントで使う場合
+画像処理、文字検査、確認一覧、梱包、公開前検査の全コマンドは [commands.md](.agents/skills/line-stamp-generator/references/commands.md) を参照してください。スキル内部の `.py` は直接実行しません。公開 CLI は `projects/ACTIVE` と実処理パスがこのリポジトリの同じプロジェクトを指すことを検証し、ACTIVE の変更と同一プロジェクトの状態・成果物更新を協調ロックで直列化します。別エージェントが更新中なら失敗終了するため、完了後に再実行してください。
 
-`AGENTS.md` と `.claude/skills/line-stamp-generator/` は純粋な Markdown と Python なので、Codex・Cursor などでもそのまま使えます。hooks がない環境では、開始時に `project.py list` を自分で実行してプロジェクトを確定し、`AGENTS.md` の「ツール固有機能の扱い」に従って破壊的コマンドと不可逆操作を実行前に自己確認してください。ブラウザ操作の手段は固定していません。実行環境で使えるものを使い、`references/publish.md` の手順に従ってください。
+### 旧プロジェクトの移行
 
-## LINE の規約について
+従来形式のプロジェクトは、先に `use <slug>` で選択してから診断します。既定では読み取りだけで、変更予定を表示します。
 
-枚数（8/16/24/32/40）、画像サイズ、テキスト制限、審査基準は `.claude/rules/line-compliance.md` にまとめていますが、公式の制作ガイドライン・審査ガイドラインが常に優先です。P6 と P8 で公式ページを確認し、差異があれば `.claude/learnings/publish.md` に記録してルールを更新してください。
+```powershell
+python scripts/line_stamp.py project --root . migrate
+python scripts/line_stamp.py project --root . migrate --apply
+```
+
+`--apply` を明示した場合だけ、同じプロジェクト内にバックアップを作り、各ファイルを同一 filesystem 上で原子的に置換します。捕捉できる途中失敗はバックアップから巻き戻します。旧 SESSION で `materials` が欠けている場合、P0 は未承認のまま `pending`、P1 以降は `refs/` 直下に読取可能な非空素材があることを確認できた場合だけ `received` として補完します。権利・許諾やゲートは推測しません。`publish: no|private` は意味を保って `local-only` にし、旧申請メタの `private` は `store_visibility` へ変換し、販売開始は安全側の `manual` に固定します。移行対象フィールドの矛盾・未知値、非標準数値・不正・重複キーの JSON、未来バージョンがある場合は一切書き換えません。移行は完全な公開準備検査ではないため、`publish: yes` で P7 へ進む場合は別途 `check-publish-ready` を実行します。
+
+## 別のエージェントを追加する
+
+1. その製品が `AGENTS.md` と `.agents/skills/` を直接検出できるか確認します
+2. 自動検出できない部分だけ、製品固有ディレクトリに薄い参照アダプタを追加します
+3. サブエージェント機能がある場合は `.agents/roles/` の4役を参照し、本文をコピーしません
+4. PreToolUse 相当の hook がある場合は `scripts/hooks/pre_tool_use.mjs` に製品名を渡します。互換用の製品別 hook ファイルが必要でも、その中では共通 hook を呼ぶだけにし、判定ロジックを再実装しません
+5. `node scripts/check_structure.mjs` と `node scripts/hooks/self_test.mjs` を通します
+
+製品固有の機能を共通要件として書かないこと、共通層から製品固有層への逆参照を作らないことが追加時の基準です。
+
+## LINE の仕様
+
+サイズ、枚数、申請テキスト、審査条件は [line-specs.md](.agents/skills/line-stamp-generator/references/line-specs.md) に整理しています。ただし、LINE Creators Market の現行公式ガイドラインを常に優先します。P6 と P8 で公式ページを再確認し、差分は `.agents/learnings/publish.md` に記録します。

@@ -1,0 +1,18 @@
+{
+  "description": "LINE スタンプ制作の不可逆操作と破壊的コマンドを共通ポリシーで防止する",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$(git rev-parse --show-toplevel)/scripts/hooks/pre_tool_use.mjs\" codex",
+            "commandWindows": "powershell -NoProfile -Command \"$repo = git rev-parse --show-toplevel; node (Join-Path $repo 'scripts/hooks/pre_tool_use.mjs') codex\"",
+            "timeout": 10,
+            "statusMessage": "Checking repository policy"
+          }
+        ]
+      }
+    ]
+  }
+}

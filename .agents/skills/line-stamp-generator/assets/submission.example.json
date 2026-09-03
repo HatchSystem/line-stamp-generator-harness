@@ -1,0 +1,31 @@
+{
+  "schema_version": 2,
+  "count": 16,
+  "title": {
+    "ja": "ハッチくんの毎日スタンプ",
+    "en": "Hatch-kun Daily Stickers"
+  },
+  "description": {
+    "ja": "あいさつや返事に使えるハッチくんの日常スタンプです。家族や友だちとの会話にどうぞ。",
+    "en": "Everyday stickers of Hatch-kun for greetings and quick replies to family and friends."
+  },
+  "creator_name": "HatchWorks",
+  "copyright": "2026HatchWorks",
+  "price_jpy": 120,
+  "price_confirmed": false,
+  "sales_area": "all",
+  "sales_countries": [],
+  "sales_start": "manual",
+  "store_visibility": "public",
+  "ai_used": true,
+  "photo_used": false,
+  "premium_participation": false,
+  "license_proof": {
+    "status": "not-required",
+    "reference": ""
+  },
+  "tags": {
+    "01": ["おはよう", "あいさつ"],
+    "02": ["ありがとう", "感謝"]
+  }
+}

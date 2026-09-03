@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "command": "node scripts/hooks/pre_tool_use.mjs cursor",
+        "timeout": 10,
+        "failClosed": true
+      }
+    ]
+  }
+}
