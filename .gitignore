@@ -1,0 +1,18 @@
+# projects (contain photos, SESSION, submit ZIPs)
+projects/*
+!projects/README.md
+tmp/
+
+# personal settings and secrets
+.env
+.env.local
+.claude/settings.local.json
+CLAUDE.local.md
+
+# in-progress plan (history/ is tracked)
+tasks/todo.md
+
+# python
+__pycache__/
+*.pyc
+.venv/
