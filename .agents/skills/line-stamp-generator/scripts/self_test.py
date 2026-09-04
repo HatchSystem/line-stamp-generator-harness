@@ -1250,9 +1250,21 @@ def main() -> None:
         assert not pack_errors
 
         prior_outputs = {name: (outdir / name).read_bytes() for name in [*member_names, zip_path.name]}
+        review_v01_path = project / "review" / "review-v01.json"
+        original_review_v01 = review_v01_path.read_bytes()
         changed = Image.new("RGBA", (100, 100), (0, 0, 0, 0))
         ImageDraw.Draw(changed).ellipse((8, 8, 91, 91), fill=(180, 40, 40, 255))
         save_png(changed, source_dir / "stamp01.png")
+        write_review_evidence_fixture(project, 8, version=2)
+        session_path = project / "SESSION.md"
+        session_path.write_text(
+            update_session_text(
+                session_path.read_text(encoding="utf-8"),
+                {"review_version": "2"},
+            ),
+            encoding="utf-8",
+        )
+        assert review_v01_path.read_bytes() == original_review_v01
         original_replace = transaction_utils.replace_path
         replace_count = 0
         fail_at = len(prior_outputs) + 3
@@ -1275,6 +1287,7 @@ def main() -> None:
                 raise AssertionError("simulated package failure did not occur")
         finally:
             transaction_utils.replace_path = original_replace
+        assert replace_count == fail_at
         for name, old_bytes in prior_outputs.items():
             assert (outdir / name).read_bytes() == old_bytes
         assert not list(outdir.glob(".line-stamp-package-*"))
