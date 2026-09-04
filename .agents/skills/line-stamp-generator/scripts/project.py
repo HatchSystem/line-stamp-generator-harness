@@ -41,8 +41,9 @@ WINDOWS_RESERVED_NAMES = {
 }
 PROJECT_DIRS = ("refs", "raw", "characters", "character-layers", "text-layers", "fonts", "stamps", "review", "submit", "meta")
 DONE_STATES = {"released", "local-complete"}
-SESSION_SCHEMA_VERSION = 2
-SUBMISSION_SCHEMA_VERSION = 2
+SESSION_SCHEMA_VERSION = 3
+SUBMISSION_SCHEMA_VERSION = 3
+DEPRECATED_SESSION_KEYS = frozenset({"adult", "consent", "rights"})
 
 
 class ProjectPathError(RuntimeError):
@@ -56,7 +57,12 @@ def valid_slug(slug: str) -> bool:
 
 def projects_root(root: str) -> Path:
     harness = Path(root).resolve()
-    base = (harness / "projects").resolve()
+    candidate = harness / "projects"
+    if candidate.is_symlink():
+        raise ProjectPathError(f"projects directory must not be a symlink: {candidate}")
+    base = candidate.resolve()
+    if candidate.exists() and base != candidate:
+        raise ProjectPathError(f"projects directory must not use filesystem indirection: {candidate}")
     if not base.is_relative_to(harness):
         raise ProjectPathError(f"projects directory escapes harness root: {base}")
     return base
@@ -115,9 +121,6 @@ def session_text(slug: str) -> str:
             "- text_check: n/a",
             "- gate: P0",
             "- character: pending",
-            "- rights: unknown",
-            "- adult: unknown",
-            "- consent: unknown",
             "- publish: unknown",
             "- lock: pending",
             "- three_view: pending",
@@ -138,19 +141,10 @@ def p0_updates(args: argparse.Namespace) -> tuple[dict[str, str], list[str]]:
     character = args.character_name.strip()
     if not character or len(character) > 40 or any(char in character for char in "\r\n"):
         errors.append("character-name must be a single non-empty line of at most 40 characters")
-
-    if args.rights not in {"own", "licensed"}:
-        errors.append("rights must be own or licensed; unknown rights stop production")
-
-    if args.source == "photo":
-        if args.consent != "yes":
-            errors.append("photo production requires explicit subject consent=yes")
-        if args.adult == "n/a":
-            errors.append("photo adult status must be yes, no, or unknown")
-        if args.publish == "yes" and args.adult != "yes":
-            errors.append("photo publication requires an explicit adult=yes; use local-only otherwise")
-    elif args.adult != "n/a" or args.consent != "n/a":
-        errors.append("character source requires adult=n/a and consent=n/a")
+    elif character.casefold() in {"pending", "unknown", "tbd", "n/a"} or re.fullmatch(
+        r"<[^>]+>", character
+    ):
+        errors.append("character-name must be finalized and must not be a template placeholder")
 
     expected_modes = {"yes": {"font", "ai"}, "no": {"none"}}
     if args.text_mode not in expected_modes[args.text]:
@@ -168,9 +162,6 @@ def p0_updates(args: argparse.Namespace) -> tuple[dict[str, str], list[str]]:
         "text_check": text_check,
         "gate": "P1",
         "character": character,
-        "rights": args.rights,
-        "adult": args.adult,
-        "consent": args.consent,
         "publish": args.publish,
         "sample_candidates": str(args.sample_candidates),
         "notes": f"P0 confirmed {date.today().isoformat()}",
@@ -227,7 +218,7 @@ def session_migration_updates(
     *,
     materials_available: bool | None = None,
 ) -> tuple[dict[str, str], list[str]]:
-    """Return meaning-preserving v1 -> v2 SESSION updates without writing files."""
+    """Return meaning-preserving legacy -> v3 SESSION updates without writing files."""
     errors: list[str] = []
     raw_version = values.get("schema_version", "1")
     try:
@@ -245,29 +236,42 @@ def session_migration_updates(
         return {}, [f"SESSION publish={publish!r} is missing or unsupported"]
 
     updates: dict[str, str] = {}
+    gate = values.get("gate", "")
+    post_p0 = re.fullmatch(r"P[1-9]", gate) is not None
     materials = values.get("materials")
     if materials is None:
         if version != 1:
-            errors.append("SESSION schema v2 is missing materials; repair it before continuing")
-        elif values.get("gate") == "P0":
+            errors.append(
+                f"SESSION schema v{version} is missing materials; repair it before continuing"
+            )
+        elif gate == "P0":
             # No approval is inferred: an unconfirmed intake remains pending.
             updates["materials"] = "pending"
-        elif re.fullmatch(r"P[1-9]", values.get("gate", "")) and materials_available is True:
-            # This records only an objective filesystem fact. Rights and consent are
-            # preserved from the legacy SESSION and are never inferred here.
+        elif post_p0 and materials_available is True:
+            # This records only an objective filesystem fact; no user declaration is inferred.
             updates["materials"] = "received"
         else:
-            if re.fullmatch(r"P[1-9]", values.get("gate", "")):
+            if post_p0:
                 errors.append(
                     "legacy SESSION after P0 needs at least one verified, non-empty source file "
                     "in refs/ before materials can be migrated to received"
                 )
             else:
                 errors.append(
-                    f"legacy SESSION gate={values.get('gate')!r} cannot determine a safe materials state"
+                    f"legacy SESSION gate={gate!r} cannot determine a safe materials state"
                 )
     elif materials not in {"pending", "received"}:
         errors.append(f"SESSION materials={materials!r} is unsupported")
+    elif post_p0 and materials == "pending":
+        if version == 1 and materials_available is True:
+            updates["materials"] = "received"
+        elif version == 1:
+            errors.append(
+                "legacy SESSION after P0 cannot retain materials=pending; verify at least one "
+                "non-empty source file in refs/ before migration"
+            )
+        else:
+            errors.append("SESSION after P0 must have materials=received")
 
     if errors:
         return {}, errors
@@ -279,7 +283,7 @@ def session_migration_updates(
 
 
 def migrated_submission(meta: dict) -> tuple[dict, list[str], list[str]]:
-    """Return a v2 metadata copy, its change descriptions, and blocking errors."""
+    """Return a v3 metadata copy, its change descriptions, and blocking errors."""
     raw_version = meta.get("schema_version", 1)
     if type(raw_version) is int:
         version = raw_version
@@ -320,6 +324,8 @@ def migrated_submission(meta: dict) -> tuple[dict, list[str], list[str]]:
     visibility = migrated.get("store_visibility")
     if "private" in migrated and not isinstance(legacy_private, bool):
         return dict(meta), [], [f"submission private={legacy_private!r} is not a boolean"]
+    if visibility is not None and not isinstance(visibility, str):
+        return dict(meta), [], [f"submission store_visibility={visibility!r} must be a string"]
     if visibility is None and isinstance(legacy_private, bool):
         migrated["store_visibility"] = "private" if legacy_private else "public"
         migrated.pop("private", None)
@@ -338,6 +344,9 @@ def migrated_submission(meta: dict) -> tuple[dict, list[str], list[str]]:
         return dict(meta), [], [
             "submission needs private: true|false or store_visibility: 'public'|'private' before migrating"
         ]
+    if migrated.get("license_proof") == {"status": "not-required", "reference": ""}:
+        migrated.pop("license_proof")
+        changes.append("remove obsolete empty license_proof")
     return migrated, changes, []
 
 
@@ -359,6 +368,19 @@ def update_session_text(text: str, updates: dict[str, str]) -> str:
     return result + ("\n" if had_final_newline else "")
 
 
+def remove_session_keys(text: str, keys: set[str] | frozenset[str]) -> str:
+    """Remove deprecated flat SESSION fields while preserving all unrelated content."""
+    had_final_newline = text.endswith("\n")
+    kept: list[str] = []
+    for line in text.splitlines():
+        match = re.match(r"^\s*-\s*([a-z_]+)\s*:", line)
+        if match and match.group(1) in keys:
+            continue
+        kept.append(line)
+    result = "\n".join(kept)
+    return result + ("\n" if had_final_newline else "")
+
+
 def parse_session_for_migration(text: str) -> tuple[dict[str, str], list[str]]:
     """Parse SESSION while rejecting duplicate keys instead of silently choosing one."""
     values: dict[str, str] = {}
@@ -377,7 +399,7 @@ def parse_session_for_migration(text: str) -> tuple[dict[str, str], list[str]]:
 
 def backup_file(path: Path) -> Path:
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-    backup = path.with_name(f"{path.name}.pre-v2-{timestamp}.bak")
+    backup = path.with_name(f"{path.name}.pre-v{SESSION_SCHEMA_VERSION}-{timestamp}.bak")
     shutil.copy2(path, backup)
     return backup
 
@@ -421,9 +443,8 @@ def read_active(root: str) -> str | None:
     return slug or None
 
 
-def collect(root: str) -> list[dict[str, str]]:
+def collect(root: str, active: str | None) -> list[dict[str, str]]:
     base = projects_root(root)
-    active = read_active(root)
     rows: list[dict[str, str]] = []
     if not base.exists():
         return rows
@@ -462,9 +483,10 @@ def collect(root: str) -> list[dict[str, str]]:
 
 
 def cmd_list(args: argparse.Namespace) -> int:
-    rows = collect(args.root)
+    active = read_active(args.root)
+    rows = collect(args.root, active)
     if args.json:
-        print(json.dumps({"active": read_active(args.root), "projects": rows}, ensure_ascii=False, indent=2))
+        print(json.dumps({"active": active, "projects": rows}, ensure_ascii=False, indent=2))
         return 0
     if not rows:
         print("projects: none")
@@ -569,6 +591,12 @@ def cmd_confirm_p0(args: argparse.Namespace) -> int:
         errors.append(f"SESSION project={values.get('project')!r} does not match ACTIVE={slug!r}")
     if values.get("gate") != "P0":
         errors.append(f"confirm-p0 requires gate=P0 (found {values.get('gate')!r})")
+    deprecated = sorted(DEPRECATED_SESSION_KEYS.intersection(values))
+    if deprecated:
+        errors.append(
+            "SESSION contains deprecated fields "
+            f"{deprecated}; run project migrate before confirming P0"
+        )
     errors.extend(reference_material_errors(project))
     updates, intake_errors = p0_updates(args)
     errors.extend(intake_errors)
@@ -698,7 +726,6 @@ def cmd_migrate(args: argparse.Namespace) -> int:
     if (
         not errors
         and session_version == 1
-        and "materials" not in session_values
         and re.fullmatch(r"P[1-9]", session_values.get("gate", ""))
     ):
         material_errors = reference_material_errors(project)
@@ -710,6 +737,9 @@ def cmd_migrate(args: argparse.Namespace) -> int:
             materials_available=materials_available,
         )
         errors.extend(session_errors)
+    session_removals = sorted(
+        key for key in DEPRECATED_SESSION_KEYS if key in session_values
+    )
     submission_path = project_file(project, "meta/submission.json")
     migrated_meta: dict | None = None
     meta_changes: list[str] = []
@@ -737,9 +767,10 @@ def cmd_migrate(args: argparse.Namespace) -> int:
         return 1
 
     planned = [f"SESSION {key}: {value}" for key, value in session_updates.items()]
+    planned.extend(f"SESSION remove deprecated field: {key}" for key in session_removals)
     planned.extend(f"submission {change}" for change in meta_changes)
     if not planned:
-        print(f"project '{slug}' already uses schema v2; no files changed")
+        print(f"project '{slug}' already uses schema v{SESSION_SCHEMA_VERSION}; no files changed")
         return 0
     for change in planned:
         print("PLAN", change)
@@ -751,8 +782,10 @@ def cmd_migrate(args: argparse.Namespace) -> int:
         return 0
 
     writes: list[tuple[Path, str]] = []
-    if session_updates:
-        writes.append((session_path, update_session_text(session_source, session_updates)))
+    if session_updates or session_removals:
+        migrated_session = update_session_text(session_source, session_updates)
+        migrated_session = remove_session_keys(migrated_session, set(session_removals))
+        writes.append((session_path, migrated_session))
     if migrated_meta is not None and meta_changes:
         try:
             rendered_meta = json.dumps(
@@ -804,7 +837,7 @@ def cmd_migrate(args: argparse.Namespace) -> int:
         print(f"BACKUP {backup}")
     if not submission_path.exists():
         print("NOTE submission.json does not exist; create it from the v2 template at P7")
-    print(f"MIGRATED project '{slug}' to schema v2")
+    print(f"MIGRATED project '{slug}' to schema v{SESSION_SCHEMA_VERSION}")
     return 0
 
 
@@ -858,9 +891,6 @@ def main() -> int:
     p_confirm.add_argument("--character-name", required=True, help="public display name; never a real name")
     p_confirm.add_argument("--sample-candidates", type=int, choices=(1, 2, 3), required=True)
     p_confirm.add_argument("--publish", choices=("yes", "local-only"), required=True)
-    p_confirm.add_argument("--rights", choices=("own", "licensed", "unknown"), required=True)
-    p_confirm.add_argument("--adult", choices=("yes", "no", "unknown", "n/a"), required=True)
-    p_confirm.add_argument("--consent", choices=("yes", "no", "unknown", "n/a"), required=True)
     p_confirm.set_defaults(func=cmd_confirm_p0)
 
     p_use = sub.add_parser("use", help="select an existing project")
@@ -871,7 +901,7 @@ def main() -> int:
     p_status.add_argument("--json", action="store_true")
     p_status.set_defaults(func=cmd_status)
 
-    p_migrate = sub.add_parser("migrate", help="inspect or migrate the active v1 project to schema v2")
+    p_migrate = sub.add_parser("migrate", help="inspect or migrate an active legacy project to schema v3")
     p_migrate.add_argument("--apply", action="store_true", help="back up and atomically write the planned changes")
     p_migrate.set_defaults(func=cmd_migrate)
 

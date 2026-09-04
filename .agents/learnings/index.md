@@ -2,6 +2,8 @@
 
 | 日付 | 要約 | 詳細 |
 |---|---|---|
+| 2026-09-05 | 共通層は構造化選択の能力契約、製品アダプタは具体的ツール名を持ち、受付項目の廃止は schema migration と同時に行う | [workflow.md](workflow.md#2026-09-05-structured-intake-contract) |
+| 2026-09-05 | 申請時の追加資料は通常の必須確認から外し、外部から要求された場合の任意情報としてだけ検証する | [publish.md](publish.md#2026-09-05-optional-supporting-evidence) |
 | 2026-09-03 | 新規プロジェクト作成とP0確定を分け、素材実体と全回答の検証後だけP1へ進める | [workflow.md](workflow.md#2026-09-03-p0-state-transition) |
 | 2026-09-03 | 提出PNGの可視性・DPI・境界値とZIP内バイトまで検証し、同一filesystemで安全に梱包する | [pipeline.md](pipeline.md#2026-09-03-submit-pack-validation) |
 | 2026-09-03 | 販売地域、AI・写真使用、ライセンス確認、参加設定を明示メタとして法的同意から分離する | [publish.md](publish.md#2026-09-03-registration-declarations) |

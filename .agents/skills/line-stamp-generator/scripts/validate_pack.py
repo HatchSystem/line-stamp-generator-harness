@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import stat
 import zipfile
 from pathlib import Path
 
@@ -29,6 +30,30 @@ def dpi_is_at_least_72(value: object) -> bool:
         return float(value[0]) >= 72.0 and float(value[1]) >= 72.0
     except (TypeError, ValueError):
         return False
+
+
+def has_exterior_transparent_background(image: Image.Image) -> bool:
+    """Require a meaningful fully transparent outside region connecting all corners."""
+    alpha = image.convert("RGBA").getchannel("A")
+    width, height = alpha.size
+    corners = {(0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1)}
+    if any(alpha.getpixel(point) != 0 for point in corners):
+        return False
+    frontier = [(0, 0)]
+    visited = {(0, 0)}
+    while frontier:
+        x, y = frontier.pop()
+        for point in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
+            px, py = point
+            if (
+                0 <= px < width
+                and 0 <= py < height
+                and point not in visited
+                and alpha.getpixel(point) == 0
+            ):
+                visited.add(point)
+                frontier.append(point)
+    return corners.issubset(visited) and len(visited) * 10 >= width * height
 
 
 def validate_png(
@@ -83,6 +108,10 @@ def validate_png(
     rgba = image.convert("RGBA")
     if rgba.getchannel("A").getextrema()[0] != 0:
         errors.append(f"{path.name} has no fully transparent background")
+    elif not has_exterior_transparent_background(rgba):
+        errors.append(
+            f"{path.name} has no connected exterior transparent background reaching all corners"
+        )
     leaks = hidden_rgb_pixels(rgba)
     if leaks:
         errors.append(f"{path.name} has {leaks} hidden RGB pixels below alpha threshold")
@@ -129,8 +158,12 @@ def validate_zip(
                 if len(matches) != 1:
                     continue
                 info = matches[0]
-                if info.is_dir():
+                if info.is_dir() or info.external_attr & 0x10:
                     errors.append(f"ZIP member {name} is a directory")
+                    continue
+                file_type = stat.S_IFMT(info.external_attr >> 16)
+                if file_type not in {0, stat.S_IFREG}:
+                    errors.append(f"ZIP member {name} is not a regular file")
                     continue
                 local_path = root / name
                 if local_path.is_symlink() or not local_path.is_file():
@@ -157,6 +190,35 @@ def validate_zip(
                     errors.append(f"ZIP member {name} differs from {local_path}")
     except Exception as exc:
         errors.append(f"ZIP is not readable: {zip_path}: {exc}")
+
+
+def validate_stamp_sources(
+    project_dir: Path,
+    submit_dir: Path,
+    expected_names: list[str],
+    errors: list[str],
+) -> None:
+    """Bind every submitted stamp byte-for-byte to its reviewed project source."""
+    source_dir = project_dir / "stamps"
+    if source_dir.is_symlink() or not source_dir.is_dir():
+        errors.append("cannot bind submitted stamps: project stamps/ is missing or indirect")
+        return
+    for name in expected_names:
+        source = source_dir / name
+        submitted = submit_dir / name
+        if source.is_symlink() or not source.is_file():
+            errors.append(f"cannot bind submitted {name}: reviewed source is missing or indirect")
+            continue
+        if submitted.is_symlink() or not submitted.is_file():
+            continue  # validate_png reports the missing submitted file.
+        try:
+            source_bytes = source.read_bytes()
+            submitted_bytes = submitted.read_bytes()
+        except OSError as exc:
+            errors.append(f"cannot compare submitted {name} with reviewed source: {exc}")
+            continue
+        if submitted_bytes != source_bytes:
+            errors.append(f"submitted {name} differs from reviewed stamps/{name}")
 
 
 def checked_project_paths(
@@ -268,6 +330,7 @@ def main() -> None:
     for name in expected_names:
         path = root / name
         validate_png(path, None, stamp_minimum, stamp_limit, args.min_margin, errors, warnings)
+    validate_stamp_sources(root.parent, root, expected_names, errors)
 
     if args.text_mode == "ai":
         warnings.append("text_mode=ai: micro-hole check skipped (text counters would be false positives); inspect the light/dark review sheet and run public command verify-text")

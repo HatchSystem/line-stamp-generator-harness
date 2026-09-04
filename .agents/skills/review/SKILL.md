@@ -22,5 +22,5 @@ description: 成果物やコード変更を AGENTS.md と共通スキルの要�
 ## メタ案（P7）
 
 - `../line-stamp-generator/references/line-specs.md` のテキスト制限（文字数・全角・禁止語・URL・告知文）
-- 実名不使用、AI 使用申告、`rights: own|licensed` の確認。写真では `consent: yes` と `adult: yes`、既存キャラクターでは両方が `n/a` になっているか
+- 実名不使用と AI/写真使用申告が事実どおりか。任意の `license_proof` がある場合は参照形式が妥当か
 - 公開 CLI の `check-publish-ready` の出力が errors=0 か

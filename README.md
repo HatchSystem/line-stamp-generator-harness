@@ -53,7 +53,7 @@ hook の有効化や信頼確認は各ツール側の仕様に従います。hoo
 ## 必要環境
 
 - Python 3.10 以上と `requirements.txt` の依存関係（画像処理・プロジェクト CLI）
-- Node.js 18 以上（構成検査と共通 hook）
+- Node.js 24 以上（構成検査と共通 hook）
 - `text_mode: ai` で OCR を使う場合のみ、Tesseract、日本語データ、`pytesseract`
 - P1〜P5 には画像を参照・生成または編集できるエージェント機能、P8 にはログイン済みページを扱えるブラウザ機能
 
@@ -74,13 +74,15 @@ python scripts/line_stamp.py self-test
 
 期待結果は各検査の `PASS` です。Python がまだ導入されていない環境でも、Node による構成・hook 検査は独立して実行できます。
 
+同じ検査は GitHub Actions でも Ubuntu / Windows、Python 3.10 / 3.14 の組み合わせで実行します。外部 Action は検証済みコミット SHA に固定します。
+
 依存関係のインストールはエージェントへ自動許可していません。内容を確認したユーザーが上のコマンドを実行してください。秘密情報は `.env` や個人設定に置き、リポジトリへコミットせず、エージェントにも読み取らせません。
 
 ## 使い方
 
 1. 対応する AI エージェントをリポジトリルートで起動し、「この写真で LINE スタンプを作りたい」などと依頼します
 2. 進行中のプロジェクトがあれば「続ける / 別を選ぶ / 新規作成」から選びます
-3. 新規なら隔離された P0 プロジェクトを先に作って素材を `refs/` に置き、P0 で素材利用権、写真の本人許諾/成年、枚数、セリフ、文字方式、候補数、LINE への申請意図を確定します。`confirm-p0` が一括保存して P1 へ進めます
+3. 新規なら隔離された P0 プロジェクトを先に作って素材を `refs/` に置き、P0 で素材種別、枚数、セリフ、文字方式、候補数、LINE への申請意図を確定します。成年、本人許諾、著作権／ライセンスは質問しません。`confirm-p0` が一括保存して P1 へ進めます
 4. P1〜P5 で特徴ロック、三面図、セリフ表、`stamp01`、全点と確認一覧を順に承認します
 5. P6 で画像とZIPの検証を通します。`publish: yes` の場合だけ P7 へ進み、申請メタを検証・承認します。`local-only` は P6 で終了します
 6. P8 で登録内容のサマリを確認し、自分で同意事項を読んで「同意します」を選び、「審査をリクエスト」を押します。承認後の「リリース」も自分で押します
@@ -94,7 +96,7 @@ python scripts/line_stamp.py self-test
 ```powershell
 python scripts/line_stamp.py project --root . list
 python scripts/line_stamp.py project --root . new --slug usagi
-python scripts/line_stamp.py project --root . confirm-p0 --materials received --source photo --count 16 --text yes --text-mode font --character-name ハッチくん --sample-candidates 1 --publish yes --rights own --adult yes --consent yes
+python scripts/line_stamp.py project --root . confirm-p0 --materials received --source photo --count 16 --text yes --text-mode font --character-name ハッチくん --sample-candidates 1 --publish yes
 python scripts/line_stamp.py project --root . use usagi
 python scripts/line_stamp.py project --root . status
 ```
@@ -112,7 +114,7 @@ python scripts/line_stamp.py project --root . migrate
 python scripts/line_stamp.py project --root . migrate --apply
 ```
 
-`--apply` を明示した場合だけ、同じプロジェクト内にバックアップを作り、各ファイルを同一 filesystem 上で原子的に置換します。捕捉できる途中失敗はバックアップから巻き戻します。旧 SESSION で `materials` が欠けている場合、P0 は未承認のまま `pending`、P1 以降は `refs/` 直下に読取可能な非空素材があることを確認できた場合だけ `received` として補完します。権利・許諾やゲートは推測しません。`publish: no|private` は意味を保って `local-only` にし、旧申請メタの `private` は `store_visibility` へ変換し、販売開始は安全側の `manual` に固定します。移行対象フィールドの矛盾・未知値、非標準数値・不正・重複キーの JSON、未来バージョンがある場合は一切書き換えません。移行は完全な公開準備検査ではないため、`publish: yes` で P7 へ進む場合は別途 `check-publish-ready` を実行します。
+`--apply` を明示した場合だけ、同じプロジェクト内にバックアップを作り、各ファイルを同一 filesystem 上で原子的に置換します。捕捉できる途中失敗はバックアップから巻き戻します。schema v3 への移行では旧 `adult`、`consent`、`rights` と、空の既定値だった `license_proof` を削除します。ユーザーが提示済みの任意資料は維持します。旧 SESSION で `materials` が欠けている場合、P0 は未承認のまま `pending`、P1 以降は `refs/` 直下に読取可能な非空素材があることを確認できた場合だけ `received` として補完します。`publish: no|private` は意味を保って `local-only` にし、旧申請メタの `private` は `store_visibility` へ変換し、販売開始は安全側の `manual` に固定します。移行対象フィールドの矛盾・未知値、非標準数値・不正・重複キーの JSON、未来バージョンがある場合は一切書き換えません。移行は完全な公開準備検査ではないため、`publish: yes` で P7 へ進む場合は別途 `check-publish-ready` を実行します。
 
 ## 別のエージェントを追加する
 

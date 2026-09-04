@@ -24,6 +24,9 @@ const PACKAGER_IMPLEMENTATION = `${SKILL_SCRIPT_DIRECTORY}/package_static.py`;
 const PREPROCESS_IMPLEMENTATION = `${SKILL_SCRIPT_DIRECTORY}/preprocess_character.py`;
 const TRANSACTION_IMPLEMENTATION = `${SKILL_SCRIPT_DIRECTORY}/transaction_utils.py`;
 const VERIFY_TEXT_IMPLEMENTATION = `${SKILL_SCRIPT_DIRECTORY}/verify_text.py`;
+const SESSION_CONTRACT_IMPLEMENTATION = `${SKILL_SCRIPT_DIRECTORY}/session_contract.py`;
+const METADATA_IMPLEMENTATION = `${SKILL_SCRIPT_DIRECTORY}/metadata_utils.py`;
+const PROJECT_CONTEXT_IMPLEMENTATION = `${SKILL_SCRIPT_DIRECTORY}/project_context.py`;
 const PYTHON_SELF_TEST = `${SKILL_SCRIPT_DIRECTORY}/self_test.py`;
 const SUBMISSION_EXAMPLE = ".agents/skills/line-stamp-generator/assets/submission.example.json";
 const EXPECTED_PROJECT_ACTIONS = ["confirm-p0", "list", "migrate", "new", "status", "use"];
@@ -35,7 +38,7 @@ const SCHEMA_GUIDE_DOCS = [
   ".agents/skills/line-stamp-generator/references/application.md",
   ".agents/skills/line-stamp-generator/references/gates.md",
 ];
-const CURRENT_SCHEMA_VERSION = 2;
+const CURRENT_SCHEMA_VERSION = 3;
 const EXPECTED_FACADE_COMMANDS = new Map([
   ["check-publish-ready", "check_publish_ready.py"],
   ["compose-static", "compose_static.py"],
@@ -56,6 +59,7 @@ const PYTHON_EXTERNAL_MODULES = new Set([
   "datetime",
   "difflib",
   "fcntl",
+  "hashlib",
   "io",
   "importlib",
   "json",
@@ -1238,11 +1242,12 @@ function validateSchemaVersionPolicy() {
     if (!check(fs.existsSync(absolute(file)), "SCHEMA_GUIDE", file, 0, "schema migration の説明文書がありません")) continue;
     const text = readText(file);
     check(
-      /schema_version[^\n]*`?2`?/.test(text) && /project\s+--root\s+\.\s+migrate/.test(text),
-      "SCHEMA_GUIDE_V2",
+      new RegExp(`schema_version[^\\n]*\`?${CURRENT_SCHEMA_VERSION}\`?`).test(text) &&
+        /project\s+--root\s+\.\s+migrate/.test(text),
+      "SCHEMA_GUIDE_CURRENT",
       file,
       0,
-      "schema_version 2 と公開 CLI の project --root . migrate を説明してください",
+      `schema_version ${CURRENT_SCHEMA_VERSION} と公開 CLI の project --root . migrate を説明してください`,
     );
   }
 
@@ -1251,12 +1256,12 @@ function validateSchemaVersionPolicy() {
     check(
       /cmd_migrate\(Namespace\(root=str\(root\), apply=False\)\)/.test(selfTest) &&
         /cmd_migrate\(Namespace\(root=str\(root\), apply=True\)\)/.test(selfTest) &&
-        /["']schema_version["']\]\s*==\s*["']2["']/.test(selfTest) &&
-        /["']schema_version["']\]\s*==\s*2\b/.test(selfTest),
+        new RegExp(`["']schema_version["']\\]\\s*==\\s*["']${CURRENT_SCHEMA_VERSION}["']`).test(selfTest) &&
+        new RegExp(`["']schema_version["']\\]\\s*==\\s*${CURRENT_SCHEMA_VERSION}\\b`).test(selfTest),
       "PYTHON_MIGRATE_TEST",
       PYTHON_SELF_TEST,
       0,
-      "自己テストは migrate の dry-run/apply と SESSION/submission schema v2 を検証してください",
+      `自己テストは migrate の dry-run/apply と SESSION/submission schema v${CURRENT_SCHEMA_VERSION} を検証してください`,
     );
   }
 }
@@ -1282,9 +1287,6 @@ function validateWorkflowContracts() {
     "character-name",
     "sample-candidates",
     "publish",
-    "rights",
-    "adult",
-    "consent",
   ]) {
     check(
       new RegExp(`p_confirm\\.add_argument\\(\\s*["']--${flag}["'][^\\n]*required\\s*=\\s*True`).test(projectText),
@@ -1294,20 +1296,33 @@ function validateWorkflowContracts() {
       `confirm-p0 の --${flag} は明示必須にしてください`,
     );
   }
+  for (const field of ["adult", "consent", "rights"]) {
+    check(
+      !new RegExp(`p_confirm\\.add_argument\\(\\s*["']--${field}["']`).test(projectText) &&
+        !projectText.includes(`"- ${field}:`) &&
+        !new RegExp(`["']${field}["']\\s*:\\s*args\\.`).test(projectText),
+      "P0_DEPRECATED_FIELD",
+      PROJECT_IMPLEMENTATION,
+      0,
+      `P0 は廃止済みの ${field} を引数・テンプレート・保存値に含めないでください`,
+    );
+  }
   check(
-    /args\.rights\s+not\s+in\s+\{["']own["']\s*,\s*["']licensed["']\}/.test(projectText) &&
-      /args\.consent\s*!=\s*["']yes["']/.test(projectText) &&
-      /args\.publish\s*==\s*["']yes["']\s+and\s+args\.adult\s*!=\s*["']yes["']/.test(projectText) &&
-      /args\.adult\s*!=\s*["']n\/a["']\s+or\s+args\.consent\s*!=\s*["']n\/a["']/.test(projectText),
-    "P0_RIGHTS_CONSENT",
+    /DEPRECATED_SESSION_KEYS\s*=\s*frozenset/.test(projectText) &&
+      /^def\s+remove_session_keys\s*\(/m.test(projectText) &&
+      /SESSION remove deprecated field/.test(projectText) &&
+      /remove_session_keys\(migrated_session,\s*set\(session_removals\)\)/.test(projectText) &&
+      /remove obsolete empty license_proof/.test(projectText) &&
+      /run project migrate before confirming P0/.test(projectText),
+    "P0_DEPRECATED_MIGRATION",
     PROJECT_IMPLEMENTATION,
     0,
-    "P0 は利用権、写真の本人許諾・成年公開条件、キャラクターの n/a を分離検証してください",
+    "v3 migration は adult・consent・rights を SESSION から明示的に除去してください",
   );
   check(
     projectText.includes('"- gate: P0"') &&
       projectText.includes('"- materials: pending"') &&
-      projectText.includes('"- rights: unknown"'),
+      projectText.includes('"- publish: unknown"'),
     "P0_INCOMPLETE_TEMPLATE",
     PROJECT_IMPLEMENTATION,
     0,
@@ -1324,7 +1339,87 @@ function validateWorkflowContracts() {
     "confirm-p0 は active project の refs/ に通常ファイルがあることを確認してください",
   );
 
+  check(
+    /candidate\s*=\s*harness\s*\/\s*["']projects["']/.test(projectText) &&
+      /candidate\.is_symlink\(\)/.test(projectText) &&
+      /base\s*!=\s*candidate/.test(projectText),
+    "PROJECT_ROOT_INDIRECTION",
+    PROJECT_IMPLEMENTATION,
+    0,
+    "projects/ 自体の symlink・junction 等の indirection を解決前後で拒否してください",
+  );
+  check(
+    /tempfile\.mkdtemp\([^\n]*\.new-/.test(projectText) &&
+      /os\.replace\(staging,\s*project\)/.test(projectText) &&
+      /os\.replace\(project,\s*staging\)/.test(projectText),
+    "PROJECT_NEW_TRANSACTION",
+    PROJECT_IMPLEMENTATION,
+    0,
+    "project new は staging から設置し、ACTIVE 更新失敗時に project をロールバックしてください",
+  );
+  check(
+    /post_p0\s*=\s*re\.fullmatch/.test(projectText) &&
+      /post_p0\s+and\s+materials\s*==\s*["']pending["']/.test(projectText) &&
+      /material_errors\s*=\s*reference_material_errors\(project\)/.test(projectText),
+    "MIGRATION_MATERIAL_EVIDENCE",
+    PROJECT_IMPLEMENTATION,
+    0,
+    "P0 後の旧 SESSION は refs/ の実在素材を検証し、materials=pending のまま移行させないでください",
+  );
+  check(
+    /character\.casefold\(\)\s+in\s+\{["']pending["']/.test(projectText) &&
+      /character-name must be finalized/.test(projectText),
+    "P0_CHARACTER_FINAL",
+    PROJECT_IMPLEMENTATION,
+    0,
+    "confirm-p0 は pending 等の character-name placeholder を拒否してください",
+  );
+
+  const metadataText = readText(METADATA_IMPLEMENTATION);
+  check(
+    /object_pairs_hook\s*=\s*_object_without_duplicates/.test(metadataText) &&
+      /parse_constant\s*=\s*_reject_non_finite_number/.test(metadataText) &&
+      /parse_float\s*=\s*_parse_finite_float/.test(metadataText) &&
+      /parse_int\s*=\s*_parse_bounded_int/.test(metadataText) &&
+      /math\.isfinite\(/.test(metadataText),
+    "STRICT_JSON_NUMBERS",
+    METADATA_IMPLEMENTATION,
+    0,
+    "共有 JSON parser は重複キー、非有限値、overflow、過大整数を拒否してください",
+  );
+
+  const sessionText = readText(SESSION_CONTRACT_IMPLEMENTATION);
+  check(
+    /values\.get\(["']materials["']\)\s*!=\s*["']received["']/.test(sessionText) &&
+      /DEPRECATED_SESSION_KEYS/.test(sessionText) &&
+      /SESSION contains deprecated fields/.test(sessionText) &&
+      /text_mode\s*==\s*["']ai["']/.test(sessionText) &&
+      /require_complete_text_evidence\(project_dir,\s*count\)/.test(sessionText),
+    "STATIC_SESSION_CONTRACT",
+    SESSION_CONTRACT_IMPLEMENTATION,
+    0,
+    "P4〜P6 の成果物コマンドは素材受領・文字モード・AI文字検査を共有 SESSION 契約で検証してください",
+  );
+  check(
+    /report\.get\(["']gate["']\)\s*!=\s*["']P5["']/.test(sessionText) &&
+      /report\.get\(["']scope["']\)\s*!=\s*["']all["']/.test(sessionText) &&
+      /manifest_sha256/.test(sessionText) &&
+      /sha256_file\(project_dir\s*\/\s*["']stamps["']\s*\/\s*name\)/.test(sessionText),
+    "AI_TEXT_HASH_EVIDENCE",
+    SESSION_CONTRACT_IMPLEMENTATION,
+    0,
+    "P6 の AI 文字承認は P5 全点 report と現行 manifest・stamp の SHA-256 に結び付けてください",
+  );
+
   const publishText = readText(PUBLISH_CHECK_IMPLEMENTATION);
+  check(
+    /DEPRECATED_SESSION_KEYS/.test(publishText) &&
+      /SESSION contains deprecated fields/.test(publishText),
+    "PUBLISH_DEPRECATED_SESSION_FIELDS",
+    PUBLISH_CHECK_IMPLEMENTATION,
+    0,
+    "公開前検査は v3 SESSION に残る adult・consent・rights を拒否し、migrate を案内してください",
+  );
   check(
     /check_sales_area\(meta,\s*errors\)/.test(publishText) &&
       /area\s+not\s+in\s+\{["']all["']\s*,\s*["']some["']\s*,\s*["']selected["']\}/.test(publishText) &&
@@ -1337,12 +1432,21 @@ function validateWorkflowContracts() {
   check(
     /check_boolean\(meta,\s*["']ai_used["']/.test(publishText) &&
       /check_boolean\(meta,\s*["']photo_used["']/.test(publishText) &&
-      /check_boolean\(meta,\s*["']premium_participation["']/.test(publishText) &&
-      /proof_required\s*=\s*photo_used\s+is\s+True\s+or\s+session\.get\(["']rights["']\)\s*==\s*["']licensed["']/.test(publishText),
+      /check_boolean\(meta,\s*["']premium_participation["']/.test(publishText),
     "PUBLISH_DECLARATIONS",
     PUBLISH_CHECK_IMPLEMENTATION,
     0,
-    "公開前検査はAI・写真・プレミアムの真偽値とライセンス確認を明示検証してください",
+    "公開前検査はAI・写真・プレミアムの真偽値を明示検証してください",
+  );
+  check(
+    /^def\s+check_license_proof\s*\(/m.test(publishText) &&
+      /proof\s*=\s*meta\.get\(["']license_proof["']\)/.test(publishText) &&
+      /if\s+proof\s+is\s+None:\s*\n\s*return/.test(publishText) &&
+      /check_license_proof\(meta,\s*project_dir,\s*errors\)/.test(publishText),
+    "PUBLISH_OPTIONAL_PROOF",
+    PUBLISH_CHECK_IMPLEMENTATION,
+    0,
+    "license_proof は欠落を許容し、提示された場合だけ検証してください",
   );
   check(
     /^def\s+check_ai_provenance\s*\(/m.test(publishText) &&
@@ -1371,6 +1475,32 @@ function validateWorkflowContracts() {
     "公開前検査は重複キーを拒否する JSON ローダーを使用してください",
   );
 
+  check(
+    /invisible_or_control_characters\(/.test(publishText) &&
+      /def\s+check_copyright\s*\(/.test(publishText) &&
+      /copyright contains text prohibited/.test(publishText),
+    "PUBLISH_METADATA_TEXT_SAFETY",
+    PUBLISH_CHECK_IMPLEMENTATION,
+    0,
+    "P7 metadata は不可視・制御文字と copyright の禁止語を正規化後に拒否してください",
+  );
+  check(
+    /resolved_prompt\s*==\s*resolved/.test(publishText) &&
+      /metadata fields must appear before the prompt note heading/.test(publishText) &&
+      /required_ai_scopes\s*=\s*\{["']text["']\}/.test(publishText),
+    "PUBLISH_PROVENANCE_BINDING",
+    PUBLISH_CHECK_IMPLEMENTATION,
+    0,
+    "AI provenance は自己参照・偽の inline note を拒否し、AI文字利用時は text scope を要求してください",
+  );
+  check(
+    /require_complete_text_evidence\(project_dir,\s*evidence_count\)/.test(publishText),
+    "PUBLISH_TEXT_EVIDENCE",
+    PUBLISH_CHECK_IMPLEMENTATION,
+    0,
+    "P7 でも現行ファイルに一致する P5 全点文字検査 evidence を再検証してください",
+  );
+
   const example = objectValue(parseJson(SUBMISSION_EXAMPLE));
   check(
     example !== null &&
@@ -1387,11 +1517,11 @@ function validateWorkflowContracts() {
       typeof example.photo_used === "boolean" &&
       typeof example.premium_participation === "boolean" &&
       typeof example.price_confirmed === "boolean" &&
-      objectValue(example.license_proof) !== null,
+      !("license_proof" in example),
     "SUBMISSION_DECLARATIONS",
     SUBMISSION_EXAMPLE,
     0,
-    "submission 例には真偽値の申告3項目、price_confirmed、license_proof が必要です",
+    "submission 例には真偽値の申告3項目と price_confirmed が必要で、任意の license_proof は既定で含めないでください",
   );
 
   const validatorText = readText(PACK_VALIDATOR_IMPLEMENTATION);
@@ -1423,6 +1553,34 @@ function validateWorkflowContracts() {
     PACK_VALIDATOR_IMPLEMENTATION,
     0,
     "ZIPは破損を安全に報告し、各memberをローカル提出ファイルとバイト比較してください",
+  );
+
+  check(
+    /has_exterior_transparent_background\(/.test(validatorText) &&
+      /connected exterior transparent background/.test(validatorText),
+    "PACK_TRANSPARENT_BOUNDARY",
+    PACK_VALIDATOR_IMPLEMENTATION,
+    0,
+    "透明背景は内部の透明ピンホールではなく、キャンバス境界へ到達する透明領域で確認してください",
+  );
+  check(
+    /stat\.S_IFMT\(info\.external_attr\s*>>\s*16\)/.test(validatorText) &&
+      /info\.external_attr\s*&\s*0x10/.test(validatorText) &&
+      /file_type\s+not\s+in\s+\{0,\s*stat\.S_IFREG\}/.test(validatorText),
+    "PACK_ZIP_REGULAR_MEMBERS",
+    PACK_VALIDATOR_IMPLEMENTATION,
+    0,
+    "ZIP の期待 member は Unix/DOS 属性も含めて通常ファイルだけを許可してください",
+  );
+  check(
+    /def\s+validate_stamp_sources\s*\(/.test(validatorText) &&
+      /submitted_bytes\s*!=\s*source_bytes/.test(validatorText) &&
+      /validate_stamp_sources\(root\.parent,\s*root,\s*expected_names,\s*errors\)/.test(validatorText) &&
+      /validate_stamp_sources\(project_dir,\s*submit_dir,\s*expected,\s*errors\)/.test(publishText),
+    "PACK_REVIEWED_SOURCE_BINDING",
+    PACK_VALIDATOR_IMPLEMENTATION,
+    0,
+    "validate-pack と P7 は submit/stampNN.png をレビュー済み stamps/stampNN.png と byte 比較してください",
   );
 
   const packagerText = readText(PACKAGER_IMPLEMENTATION);
@@ -1483,8 +1641,12 @@ function validateWorkflowContracts() {
   const contactText = readText(CONTACT_SHEET_IMPLEMENTATION);
   check(
     /REVIEW_NAME_RE/.test(contactText) &&
-      /output\.open\(["']xb["']\)/.test(contactText) &&
-      /same project's review/.test(contactText),
+      /^def\s+write_review_pair\s*\(/m.test(contactText) &&
+      /path\.open\(["']xb["']\)/.test(contactText) &&
+      /with\s+exclusive_lock\(/.test(contactText) &&
+      /write_review_pair\(output,\s*payload,\s*evidence_payload\)/.test(contactText) &&
+      /same project's review/.test(contactText) &&
+      /load_static_session\(project_dir,\s*\{["']P5["']\}\)/.test(contactText),
     "CONTACT_SHEET_APPEND_ONLY",
     CONTACT_SHEET_IMPLEMENTATION,
     0,
@@ -1496,7 +1658,10 @@ function validateWorkflowContracts() {
     /write_report_pair\(/.test(verifyText) &&
       /path\.open\(["']xb["']\)/.test(verifyText) &&
       /["']--review-dir["']\s*,\s*required=True/.test(verifyText) &&
-      /return\s+1\s+if\s+mismatches\s+or\s+near\s+else\s+0/.test(verifyText),
+      /return\s+1\s+if\s+mismatches\s+or\s+near\s+else\s+0/.test(verifyText) &&
+      /load_static_session\(project_dir,\s*\{["']P4["']\s*,\s*["']P5["']\}\)/.test(verifyText) &&
+      /manifest_sha256/.test(verifyText) &&
+      /["']scope["']\s*:\s*scope/.test(verifyText),
     "VERIFY_TEXT_EVIDENCE",
     VERIFY_TEXT_IMPLEMENTATION,
     0,
@@ -1845,6 +2010,34 @@ function validateRootAdapter() {
   if (!check(fs.existsSync(absolute(file)), "CLAUDE_ADAPTER", file, 0, "Claude adapter がありません")) return;
   const text = readText(file);
   check(/^@AGENTS\.md\s*$/m.test(text), "CLAUDE_IMPORT", file, 0, "独立した行で @AGENTS.md を import してください");
+  for (const adapter of [file, ".claude/commands/line-stamp-generator.md", ".claude/commands/plan.md"]) {
+    if (!check(fs.existsSync(absolute(adapter)), "CLAUDE_CHOICE_ADAPTER", adapter, 0, "Claude 選択アダプタがありません")) continue;
+    const adapterText = readText(adapter);
+    check(
+      adapterText.includes("AskUserQuestion") &&
+        /最大3問/.test(adapterText) &&
+        /推奨案を先頭/.test(adapterText) &&
+        /相互排他的/.test(adapterText) &&
+        /利用できない(?:環境|場合)[^\n]*番号付き選択肢/.test(adapterText),
+      "CLAUDE_STRUCTURED_CHOICES",
+      adapter,
+      0,
+      "Claude の有限選択は AskUserQuestion、最大3問、推奨先頭、相互排他、利用不可時だけ番号付きフォールバックを明記してください",
+    );
+  }
+  for (const shared of [
+    "AGENTS.md",
+    ".agents/skills/line-stamp-generator/SKILL.md",
+    ".agents/skills/line-stamp-generator/references/dialogue.md",
+  ]) {
+    check(
+      !readText(shared).includes("AskUserQuestion"),
+      "SHARED_VENDOR_NEUTRAL_CHOICES",
+      shared,
+      0,
+      "共通層では製品固有の選択ツール名を使わず、構造化選択 UI と表現してください",
+    );
+  }
 }
 
 

@@ -7,14 +7,14 @@
 ```powershell
 python scripts/line_stamp.py project --root . list
 python scripts/line_stamp.py project --root . new --slug usagi
-python scripts/line_stamp.py project --root . confirm-p0 --materials received --source photo --count 16 --text yes --text-mode font --character-name ハッチくん --sample-candidates 1 --publish yes --rights own --adult yes --consent yes
+python scripts/line_stamp.py project --root . confirm-p0 --materials received --source photo --count 16 --text yes --text-mode font --character-name ハッチくん --sample-candidates 1 --publish yes
 python scripts/line_stamp.py project --root . use usagi
 python scripts/line_stamp.py project --root . status
 ```
 
-`new` は `^[a-z0-9][a-z0-9-]{1,39}$`（2〜40文字、先頭は英小文字または数字）に合う実名でない slug で、隔離された `gate: P0` のプロジェクトを作る。Windows の予約デバイス名とハーネス予約名 `active` は使えず、既存 slug も拒否される。素材をその `refs/` へ置き、P0 の全回答を復唱して承認を得てから `confirm-p0` を実行する。このコマンドは `refs/` 直下の通常ファイルと、`source`、枚数、文字状態、表示名、候補数、申請意図、素材利用権、写真の成年・本人許諾を一括検証・保存し、矛盾がなければ `gate: P1` へ進める。既存キャラクターでは `--adult n/a --consent n/a`、文字なしでは `--text no --text-mode none` を指定する。
+`new` は `^[a-z0-9][a-z0-9-]{1,39}$`（2〜40文字、先頭は英小文字または数字）に合う実名でない slug で、隔離された `gate: P0` のプロジェクトを作る。Windows の予約デバイス名とハーネス予約名 `active` は使えず、既存 slug も拒否される。素材をその `refs/` へ置き、P0 の全回答を復唱して承認を得てから `confirm-p0` を実行する。このコマンドは `refs/` 直下の通常ファイルと、`source`、枚数、文字状態、表示名、候補数、申請意図を一括検証・保存し、矛盾がなければ `gate: P1` へ進める。`adult`、`consent`、`rights` は引数にも SESSION にも持たない。文字なしでは `--text no --text-mode none` を指定する。
 
-旧 v1 プロジェクトは対象を `use` してから診断する。最初のコマンドは dry-run で、2つ目だけがバックアップ作成後に書き込む。欠落した `materials` は、P0 なら `pending`、P1 以降なら `refs/` の読取可能な非空素材を確認できたときだけ `received` にする。権利、許諾、ゲート、承認状態は変更しない。
+旧形式のプロジェクトは対象を `use` してから診断する。最初のコマンドは dry-run で、2つ目だけがバックアップ作成後に書き込む。v3 への移行では廃止済みの `adult`、`consent`、`rights` と、空の既定値だった `license_proof` を削除し、ユーザーが提示済みの任意資料は維持する。欠落した `materials` は、P0 なら `pending`、P1 以降なら `refs/` の読取可能な非空素材を確認できたときだけ `received` にする。ゲートと承認状態は変更しない。
 
 ```powershell
 python scripts/line_stamp.py project --root . migrate
@@ -39,7 +39,7 @@ python scripts/line_stamp.py preprocess-character projects/usagi/raw/stamp01.png
 
 ## 文字合成
 
-[static-manifest.example.json](../assets/static-manifest.example.json) を `projects/usagi/manifest.json` へコピーし、`text_mode`、フォント、色、セリフ、キャラクター画像を設定する。`font` を使う場合は、利用許諾を確認した日本語フォントを `projects/usagi/fonts/` に置く。manifest 内の相対パスは manifest のあるディレクトリを基準に解決される。`items[].text` は両方式で承認済みセリフを一字一句そのまま書く（`ai` では検査の正解として使う）。
+[static-manifest.example.json](../assets/static-manifest.example.json) を `projects/usagi/manifest.json` へコピーし、`text_mode`、フォント、色、セリフ、キャラクター画像を設定する。`font` を使う場合は、日本語フォントを `projects/usagi/fonts/` に置く。manifest 内の相対パスは manifest のあるディレクトリを基準に解決される。`items[].text` は両方式で承認済みセリフを一字一句そのまま書く（`ai` では検査の正解として使う）。
 
 manifest の `style.text_mode` は SESSION と一致させる。P4 の合成は item 01 だけ、P5 は ID が `1..SESSION count` と完全一致する全点だけを受け付ける。
 
@@ -103,7 +103,7 @@ P5 承認後に SESSION を P6 へ進めてから梱包・検証する。`packag
 
 ## 公開前チェック
 
-[submission.example.json](../assets/submission.example.json) を `projects/usagi/meta/submission.json` へコピーして埋め、SESSION と ZIP を合わせて検査する。AI を使用した場合は [ai-provenance.example.md](../assets/ai-provenance.example.md) を基に `projects/usagi/meta/ai-provenance.md` を作り、利用ツール、生成日、承認済みプロンプトまたはその保存先を記録する。SESSION が `text_mode: ai` なら `ai_used: true` と provenance の `scope: text` が必須である。販売エリア、対象国、AI/写真使用、ライセンス証明、LINEスタンプ プレミアム参加は既定値を黙認せず、ユーザーが選んだ値を保存する。価格は現在の登録画面から選んだ正の `price_jpy` を復唱し、ユーザー確認後だけ `price_confirmed: true` にする。
+[submission.example.json](../assets/submission.example.json) を `projects/usagi/meta/submission.json` へコピーして埋め、SESSION と ZIP を合わせて検査する。AI を使用した場合は [ai-provenance.example.md](../assets/ai-provenance.example.md) を基に `projects/usagi/meta/ai-provenance.md` を作り、利用ツール、生成日、承認済みプロンプトまたはその保存先を記録する。SESSION が `text_mode: ai` なら `ai_used: true` と provenance の `scope: text` が必須である。販売エリア、対象国、AI/写真使用、LINEスタンプ プレミアム参加は既定値を黙認せず、ユーザーが選んだ値を保存する。`license_proof` は通常は省略し、LINE から追加資料を求められユーザーが提示した場合だけ任意で保存する。価格は現在の登録画面から選んだ正の `price_jpy` を復唱し、ユーザー確認後だけ `price_confirmed: true` にする。
 
 ```powershell
 python scripts/line_stamp.py check-publish-ready --session projects/usagi/SESSION.md --submission projects/usagi/meta/submission.json --zip projects/usagi/submit/line-stamp-submit.zip

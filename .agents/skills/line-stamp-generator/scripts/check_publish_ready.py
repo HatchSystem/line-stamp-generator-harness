@@ -14,7 +14,8 @@ from pathlib import Path
 
 from metadata_utils import DuplicateKeyError, loads_no_duplicates
 from project_context import enforce_facade_project
-from validate_pack import validate_png, validate_zip
+from session_contract import require_complete_text_evidence, require_review_evidence
+from validate_pack import validate_png, validate_stamp_sources, validate_zip
 
 ALLOWED_COUNTS = {8, 16, 24, 32, 40}
 TITLE_RANGE = (2, 40)
@@ -22,8 +23,8 @@ DESCRIPTION_RANGE = (10, 160)
 CREATOR_MAX = 50
 COPYRIGHT_MAX = 50
 MAX_TAGS_PER_STAMP = 9
-SESSION_SCHEMA_VERSION = "2"
-SUBMISSION_SCHEMA_VERSION = 2
+SESSION_SCHEMA_VERSION = "3"
+SUBMISSION_SCHEMA_VERSION = 3
 PROJECT_SLUG_RE = re.compile(r"[a-z0-9][a-z0-9-]{1,39}")
 WINDOWS_RESERVED_NAMES = {
     "ACTIVE",
@@ -64,14 +65,11 @@ SESSION_REQUIRED = {
     "materials": {"received"},
     "gate": {"P7"},
     "publish": {"yes"},
-    "rights": {"own", "licensed"},
     "validation": {"ok"},
     "submission": {"not-started"},
 }
-SOURCE_REQUIRED = {
-    "photo": {"consent": {"yes"}, "adult": {"yes"}},
-    "character": {"consent": {"n/a"}, "adult": {"n/a"}},
-}
+ALLOWED_SOURCES = {"photo", "character"}
+DEPRECATED_SESSION_KEYS = {"adult", "consent", "rights"}
 
 
 def parse_session(path: Path) -> tuple[dict[str, str], list[str]]:
@@ -169,6 +167,11 @@ def counted_length(text: str) -> int:
     return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1 for ch in text)
 
 
+def invisible_or_control_characters(text: str) -> list[str]:
+    """Return code points unsafe in single-line Creators Market metadata."""
+    return [character for character in text if unicodedata.category(character).startswith("C")]
+
+
 def check_text(label: str, text: str, length_range: tuple[int, int], ascii_only: bool, errors: list[str]) -> None:
     if not isinstance(text, str) or not text.strip():
         errors.append(f"{label} is empty")
@@ -181,12 +184,32 @@ def check_text(label: str, text: str, length_range: tuple[int, int], ascii_only:
         errors.append(f"{label} contains full-width characters")
     if has_emoji_or_symbol(text):
         errors.append(f"{label} contains emoji or symbol characters")
-    normalized = unicodedata.normalize("NFKC", text).casefold()
+    unsafe_characters = invisible_or_control_characters(text)
+    if unsafe_characters:
+        codepoints = sorted({f"U+{ord(character):04X}" for character in unsafe_characters})
+        errors.append(f"{label} contains invisible or control characters: {codepoints}")
+    visible_text = "".join(
+        character for character in text if not unicodedata.category(character).startswith("C")
+    )
+    normalized = unicodedata.normalize("NFKC", visible_text).casefold()
     for name, pattern in BANNED_TEXT_PATTERNS:
         if pattern.search(normalized):
             errors.append(f"{label} contains banned text {name!r}")
     if URL_PATTERN.search(normalized):
         errors.append(f"{label} contains a URL")
+
+
+def check_copyright(value: object, errors: list[str]) -> None:
+    """Validate the stricter ASCII copyright field, including common banned terms."""
+    if not isinstance(value, str) or not value:
+        errors.append("copyright is empty")
+        return
+    if len(value) > COPYRIGHT_MAX or re.fullmatch(r"[A-Za-z0-9]+", value) is None:
+        errors.append("copyright must contain only ASCII letters and digits and be at most 50 characters")
+        return
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    if any(pattern.search(normalized) for _, pattern in BANNED_TEXT_PATTERNS):
+        errors.append("copyright contains text prohibited by the LINE metadata rules")
 
 
 def check_boolean(meta: dict, key: str, errors: list[str]) -> bool | None:
@@ -201,7 +224,7 @@ def check_boolean(meta: dict, key: str, errors: list[str]) -> bool | None:
 def check_sales_area(meta: dict, errors: list[str]) -> None:
     area = meta.get("sales_area")
     countries = meta.get("sales_countries")
-    if area not in {"all", "some", "selected"}:
+    if not isinstance(area, str) or area not in {"all", "some", "selected"}:
         errors.append("sales_area must be 'all', 'some', or 'selected'")
     if not isinstance(countries, list):
         errors.append("sales_countries must be a list")
@@ -214,12 +237,12 @@ def check_sales_area(meta: dict, errors: list[str]) -> None:
         errors.append("sales_countries must not contain duplicates")
     if area == "all" and countries:
         errors.append("sales_area='all' requires an empty sales_countries list")
-    elif area in {"some", "selected"} and not countries:
+    elif (area == "some" or area == "selected") and not countries:
         errors.append(f"sales_area={area!r} requires a nonempty sales_countries list")
 
 
 def check_store_visibility(meta: dict, errors: list[str]) -> None:
-    """Require the v2 field and reject every residual legacy alias."""
+    """Require the canonical field and reject every residual legacy alias."""
     if "private" in meta:
         errors.append(
             "private is deprecated and must be removed with public command "
@@ -363,12 +386,39 @@ def check_ai_provenance(
 
             prompt_reference = fields.get("prompt_reference", "").strip()
             if prompt_reference.casefold() == "inline below":
-                note_match = re.search(
-                    r"^##\s+Prompt or reproducibility note\s*$([\s\S]*)",
-                    content,
-                    flags=re.MULTILINE,
+                note_matches = list(
+                    re.finditer(
+                        r"^##[ \t]+Prompt or reproducibility note[ \t]*\r?\n"
+                        r"(?P<body>.*?)(?=^#{1,6}[ \t]+|\Z)",
+                        content,
+                        flags=re.MULTILINE | re.DOTALL,
+                    )
                 )
-                note = note_match.group(1).strip() if note_match else ""
+                if len(note_matches) != 1:
+                    errors.append(
+                        "meta/ai-provenance.md inline prompt_reference requires exactly one "
+                        "Prompt or reproducibility note section"
+                    )
+                    note_body = ""
+                else:
+                    note_body = note_matches[0].group("body")
+                    field_bullets_after_heading = [
+                        match.group(1)
+                        for match in re.finditer(
+                            r"^\s*-\s*([a-z_]+)\s*:", note_body, flags=re.MULTILINE
+                        )
+                        if match.group(1) in PROVENANCE_REQUIRED_FIELDS
+                    ]
+                    if field_bullets_after_heading:
+                        errors.append(
+                            "meta/ai-provenance.md metadata fields must appear before the prompt note heading"
+                        )
+                note_lines = [
+                    line
+                    for line in note_body.splitlines()
+                    if not re.match(r"^\s*-\s*[a-z_]+\s*:", line)
+                ]
+                note = "\n".join(note_lines).strip()
                 template_note = (
                     "承認済みのプロンプト、または対象プロジェクト内に保存したプロンプトファイルの一覧を記録する。"
                     "認証情報、実名など申請に不要な個人情報、他プロジェクトへの参照は書かない。"
@@ -391,7 +441,12 @@ def check_ai_provenance(
                         except OSError as exc:
                             errors.append(f"cannot resolve ai prompt_reference: {exc}")
                         else:
-                            if not resolved_prompt.is_relative_to(resolved_project) or not resolved_prompt.is_file():
+                            if resolved_prompt == resolved:
+                                errors.append(
+                                    "meta/ai-provenance.md prompt_reference must not refer to "
+                                    "ai-provenance.md itself"
+                                )
+                            elif not resolved_prompt.is_relative_to(resolved_project) or not resolved_prompt.is_file():
                                 errors.append(
                                     "meta/ai-provenance.md prompt_reference must name an existing project-local file"
                                 )
@@ -413,8 +468,13 @@ def check_session_state(
     """Require a complete P7 state instead of accepting a few isolated flags."""
     if session.get("schema_version") != SESSION_SCHEMA_VERSION:
         errors.append(
-            "SESSION schema_version must be 2; inspect the active project with public command "
+            "SESSION schema_version must be 3; inspect the active project with public command "
             "`project --root . migrate`"
+        )
+    deprecated = sorted(DEPRECATED_SESSION_KEYS.intersection(session))
+    if deprecated:
+        errors.append(
+            f"SESSION contains deprecated fields {deprecated}; run project migrate first"
         )
     for key, allowed in SESSION_REQUIRED.items():
         value = session.get(key, "missing")
@@ -430,17 +490,15 @@ def check_session_state(
         )
 
     source = session.get("source", "missing")
-    if source not in SOURCE_REQUIRED:
-        errors.append(f"SESSION source={source}, required one of {sorted(SOURCE_REQUIRED)}")
-    else:
-        for key, allowed in SOURCE_REQUIRED[source].items():
-            value = session.get(key, "missing")
-            if value not in allowed:
-                errors.append(f"SESSION {source} requires {key} in {sorted(allowed)} (found {value})")
+    if source not in ALLOWED_SOURCES:
+        errors.append(f"SESSION source={source}, required one of {sorted(ALLOWED_SOURCES)}")
 
     count = session.get("count", "")
-    if not count.isascii() or not count.isdigit() or int(count) not in ALLOWED_COUNTS:
+    if count not in {str(value) for value in ALLOWED_COUNTS}:
         errors.append(f"SESSION count={count or 'missing'}, required one of {sorted(ALLOWED_COUNTS)}")
+    review_version = session.get("review_version", "")
+    if re.fullmatch(r"[1-9][0-9]{0,8}", review_version) is None:
+        errors.append("SESSION review_version must be a positive version approved at P5")
 
     text = session.get("text", "missing")
     text_mode = session.get("text_mode", "missing")
@@ -465,35 +523,26 @@ def check_session_state(
 
 def check_license_proof(
     meta: dict,
-    session: dict[str, str],
-    photo_used: bool | None,
     project_dir: Path,
     errors: list[str],
 ) -> None:
-    """Check declaration completeness, not the legal validity of supporting proof."""
+    """Validate optional supporting evidence without making it a publication gate."""
     proof = meta.get("license_proof")
+    if proof is None:
+        return
     if not isinstance(proof, dict):
         errors.append("license_proof must be an object with status and reference strings")
         return
 
     status = proof.get("status")
     reference = proof.get("reference")
-    if status not in {"not-required", "user-confirmed"}:
+    if not isinstance(status, str) or status not in {"not-required", "user-confirmed"}:
         errors.append("license_proof.status must be 'not-required' or 'user-confirmed'")
     if not isinstance(reference, str):
         errors.append("license_proof.reference must be a string")
         reference = ""
 
-    proof_required = photo_used is True or session.get("rights") == "licensed"
-    if proof_required:
-        if status != "user-confirmed":
-            errors.append(
-                "photo use or licensed rights require license_proof.status='user-confirmed'; "
-                "the checker does not validate the proof itself"
-            )
-        if not reference.strip():
-            errors.append("photo use or licensed rights require a nonempty license_proof.reference")
-    elif status == "user-confirmed" and not reference.strip():
+    if status == "user-confirmed" and not reference.strip():
         errors.append("license_proof.status='user-confirmed' requires a nonempty reference")
     elif status == "not-required" and reference.strip():
         errors.append("license_proof.status='not-required' requires an empty reference")
@@ -533,6 +582,22 @@ def main() -> None:
         else:
             errors.extend(session_errors)
             check_session_state(session, session_path, errors)
+            evidence_count_value = session.get("count", "")
+            review_version_value = session.get("review_version", "")
+            if evidence_count_value in {str(value) for value in ALLOWED_COUNTS}:
+                evidence_count = int(evidence_count_value)
+                if re.fullmatch(r"[1-9][0-9]{0,8}", review_version_value):
+                    try:
+                        require_review_evidence(
+                            project_dir, evidence_count, int(review_version_value)
+                        )
+                    except ValueError as exc:
+                        errors.append(f"P7 review evidence: {exc}")
+                if session.get("text_mode") == "ai":
+                    try:
+                        require_complete_text_evidence(project_dir, evidence_count)
+                    except ValueError as exc:
+                        errors.append(f"P7 AI text evidence: {exc}")
 
     if submission_path.is_symlink() or not submission_path.is_file():
         errors.append(f"missing submission {submission_path}")
@@ -549,7 +614,7 @@ def main() -> None:
 
     if type(meta.get("schema_version")) is not int or meta.get("schema_version") != SUBMISSION_SCHEMA_VERSION:
         errors.append(
-            "submission schema_version must be 2; inspect the active project with public command "
+            "submission schema_version must be 3; inspect the active project with public command "
             "`project --root . migrate`"
         )
 
@@ -576,11 +641,7 @@ def main() -> None:
     creator = meta.get("creator_name", "")
     check_text("creator_name", creator, (1, CREATOR_MAX), False, errors)
 
-    copyright_text = meta.get("copyright", "")
-    if not isinstance(copyright_text, str) or not copyright_text:
-        errors.append("copyright is empty")
-    elif len(copyright_text) > COPYRIGHT_MAX or re.fullmatch(r"[A-Za-z0-9]+", copyright_text) is None:
-        errors.append("copyright must contain only ASCII letters and digits and be at most 50 characters")
+    check_copyright(meta.get("copyright", ""), errors)
 
     ai_used = check_boolean(meta, "ai_used", errors)
     photo_used = check_boolean(meta, "photo_used", errors)
@@ -593,7 +654,7 @@ def main() -> None:
     check_ai_declaration(session, ai_used, errors)
     required_ai_scopes = {"text"} if session.get("text_mode") == "ai" else set()
     check_ai_provenance(project_dir, ai_used, errors, required_ai_scopes)
-    check_license_proof(meta, session, photo_used, project_dir, errors)
+    check_license_proof(meta, project_dir, errors)
     price_jpy = meta.get("price_jpy")
     if type(price_jpy) is not int or price_jpy <= 0:
         errors.append("price_jpy must be a positive integer chosen from the current registration form")
@@ -633,6 +694,7 @@ def main() -> None:
                 errors,
                 warnings,
             )
+        validate_stamp_sources(project_dir, submit_dir, expected, errors)
         validate_zip(zip_path, submit_dir, ["main.png", "tab.png", *expected], errors)
 
     print(f"errors={len(errors)} warnings={len(warnings)}")

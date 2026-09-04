@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import hashlib
+import io
 import json
 import os
 import re
@@ -22,6 +24,7 @@ from PIL import Image, ImageOps
 
 from metadata_utils import DuplicateKeyError, loads_no_duplicates
 from project_context import enforce_facade_project
+from session_contract import load_static_session, read_regular_bytes
 from transaction_utils import exclusive_lock
 
 # characters whose OCR confusion is not a typo in practice (long vowel marks, dashes, small kana size)
@@ -137,40 +140,13 @@ def next_version(review_dir: Path) -> int:
 
 def verification_session(project_dir: Path) -> tuple[dict[str, str], list[str]]:
     """Read the gate/count contract that defines P4 versus complete P5 evidence."""
-    session_path = project_dir / "SESSION.md"
-    if session_path.is_symlink() or not session_path.is_file():
-        return {}, ["active project SESSION.md must be a regular non-symlink file"]
     try:
-        lines = session_path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeError) as exc:
-        return {}, [f"cannot read SESSION.md as UTF-8: {exc}"]
-    values: dict[str, str] = {}
+        values = load_static_session(project_dir, {"P4", "P5"})
+    except ValueError as exc:
+        return {}, [str(exc)]
     errors: list[str] = []
-    for line_number, line in enumerate(lines, start=1):
-        match = re.match(r"^-\s*([a-z_]+)\s*:\s*(.*)$", line.strip())
-        if not match:
-            continue
-        key, value = match.groups()
-        if key in values:
-            errors.append(f"SESSION key {key!r} is duplicated (line {line_number})")
-        else:
-            values[key] = value.strip()
-    if values.get("schema_version") != "2":
-        errors.append("SESSION schema_version must be 2")
-    if values.get("project") != project_dir.name:
-        errors.append(
-            f"SESSION project={values.get('project')!r} does not match {project_dir.name!r}"
-        )
     if values.get("text") != "yes" or values.get("text_mode") != "ai":
         errors.append("verify-text requires SESSION text=yes and text_mode=ai")
-    if values.get("gate") not in {"P4", "P5"}:
-        errors.append(f"verify-text requires SESSION gate=P4 or P5 (found {values.get('gate')!r})")
-    try:
-        count = int(values.get("count", ""))
-    except ValueError:
-        count = 0
-    if count not in {8, 16, 24, 32, 40}:
-        errors.append(f"SESSION count={values.get('count')!r} is not a supported static count")
     return values, errors
 
 
@@ -255,8 +231,10 @@ def main() -> int:
             print(f"ERROR verify-text: {message}")
         return 1
     try:
-        manifest = loads_no_duplicates(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError, DuplicateKeyError) as exc:
+        manifest_payload = read_regular_bytes(manifest_path)
+        manifest = loads_no_duplicates(manifest_payload.decode("utf-8"))
+        manifest_sha256 = hashlib.sha256(manifest_payload).hexdigest()
+    except (OSError, UnicodeError, ValueError) as exc:
         print(f"ERROR verify-text: manifest を読めない: {exc}")
         return 1
     if not isinstance(manifest, dict):
@@ -334,31 +312,47 @@ def main() -> int:
         else:
             expected = ""
         path = stamp_dir / f"stamp{index:02d}.png"
-        row = {"id": index, "file": path.name, "expected": expected, "ocr": "", "status": "", "similarity": None}
+        row = {
+            "id": index,
+            "file": path.name,
+            "sha256": None,
+            "expected": expected,
+            "ocr": "",
+            "status": "",
+            "similarity": None,
+        }
         if not text_valid or not normalize(expected, False):
             row["status"] = "manifest-invalid"
         elif path.is_symlink() or not path.is_file():
             row["status"] = "missing"
-        elif not available:
-            row["status"] = "visual-required"
         else:
-            with Image.open(path) as opened:
-                ocr = run_ocr(opened, args.lang, args.scale)
-            row["ocr"] = ocr.replace("\n", "/")
-            strict = normalize(expected, False) == normalize(ocr, False)
-            loose_e, loose_o = normalize(expected, True), normalize(ocr, True)
-            similarity = difflib.SequenceMatcher(None, loose_e, loose_o).ratio() if loose_e else 0.0
-            row["similarity"] = round(similarity, 3)
-            if strict:
-                row["status"] = "match"
-            elif loose_e == loose_o or similarity >= args.min_similarity:
-                row["status"] = "near"  # likely OCR noise; must be confirmed visually
-            else:
-                row["status"] = "mismatch"
+            try:
+                stamp_payload = read_regular_bytes(path)
+                row["sha256"] = hashlib.sha256(stamp_payload).hexdigest()
+                if not available:
+                    row["status"] = "visual-required"
+                else:
+                    with Image.open(io.BytesIO(stamp_payload)) as opened:
+                        opened.load()
+                        ocr = run_ocr(opened, args.lang, args.scale)
+                    row["ocr"] = ocr.replace("\n", "/")
+                    strict = normalize(expected, False) == normalize(ocr, False)
+                    loose_e, loose_o = normalize(expected, True), normalize(ocr, True)
+                    similarity = difflib.SequenceMatcher(None, loose_e, loose_o).ratio() if loose_e else 0.0
+                    row["similarity"] = round(similarity, 3)
+                    if strict:
+                        row["status"] = "match"
+                    elif loose_e == loose_o or similarity >= args.min_similarity:
+                        row["status"] = "near"  # likely OCR noise; must be confirmed visually
+                    else:
+                        row["status"] = "mismatch"
+            except (OSError, ValueError, RuntimeError):
+                row["status"] = "unreadable"
         rows.append(row)
 
     mismatches = [r for r in rows if r["status"] == "mismatch"]
     missing = [r for r in rows if r["status"] == "missing"]
+    unreadable = [r for r in rows if r["status"] == "unreadable"]
     invalid = [r for r in rows if r["status"] == "manifest-invalid"]
     near = [r for r in rows if r["status"] == "near"]
     visual = [r for r in rows if r["status"] == "visual-required"]
@@ -367,7 +361,8 @@ def main() -> int:
         version = next_version(review_dir)
         md_path = review_dir / f"text-check-v{version:02d}.md"
         json_path = review_dir / f"text-check-v{version:02d}.json"
-        lines_md = [f"# text-check v{version:02d}", "", f"- dir: `{args.dir}`", f"- lang: `{args.lang}`", f"- ocr: {'available' if available else 'unavailable — ' + reason}", "",
+        scope = "sample" if session["gate"] == "P4" else "all"
+        lines_md = [f"# text-check v{version:02d}", "", f"- project: `{manifest_path.parent.name}`", f"- gate: `{session['gate']}`", f"- scope: `{scope}`", f"- dir: `{args.dir}`", f"- lang: `{args.lang}`", f"- ocr: {'available' if available else 'unavailable — ' + reason}", "",
                     "| id | expected | ocr | similarity | status |", "|---|---|---|---|---|"]
         for r in rows:
             sim = "" if r["similarity"] is None else f"{r['similarity']:.2f}"
@@ -377,22 +372,35 @@ def main() -> int:
         lines_md += ["", "## 次にやること", "",
                      "- `manifest-invalid`: manifest の空または不正な `text` を修正して再検査する",
                      "- `missing`: 対象画像を用意して再検査する",
+                     "- `unreadable`: 読み取れない対象画像を修復して再検査する",
                      "- `mismatch`: OCR 単独では再生成しない。エージェントの読み取りとユーザーの目視で実画像の不一致を確認した番号だけ再生成する",
                      "- `near`: OCR ノイズの可能性。エージェントが画像を読み、ユーザーに目視確認を取る",
                      "- `visual-required`: OCR 不可。全点をエージェントが読み上げ、ユーザーの目視承認で判定する",
                      "- OCR の結果だけで合否、再生成、SESSION `text_check: ok` を決めない。ユーザーの承認が必須", ""]
         json_text = json.dumps(
-            {"version": version, "ocr_available": available, "reason": reason, "rows": rows},
+            {
+                "schema_version": 1,
+                "version": version,
+                "project": manifest_path.parent.name,
+                "gate": session["gate"],
+                "scope": scope,
+                "session_count": int(session["count"]),
+                "manifest_sha256": manifest_sha256,
+                "ocr_available": available,
+                "reason": reason,
+                "rows": rows,
+            },
             ensure_ascii=False,
             indent=2,
+            allow_nan=False,
         ) + "\n"
         write_report_pair(md_path, "\n".join(lines_md), json_path, json_text)
 
-    print(f"text-check v{version:02d}: checked={len(rows)} match={sum(r['status']=='match' for r in rows)} near={len(near)} mismatch={len(mismatches)} missing={len(missing)} manifest-invalid={len(invalid)} visual-required={len(visual)}")
-    for r in invalid + missing + mismatches + near:
+    print(f"text-check v{version:02d}: checked={len(rows)} match={sum(r['status']=='match' for r in rows)} near={len(near)} mismatch={len(mismatches)} missing={len(missing)} unreadable={len(unreadable)} manifest-invalid={len(invalid)} visual-required={len(visual)}")
+    for r in invalid + missing + unreadable + mismatches + near:
         print(f"{r['status'].upper()} stamp{r['id']:02d}: expected='{r['expected']}' ocr='{r['ocr']}'")
     print(f"report: {md_path}")
-    input_issues = invalid + missing
+    input_issues = invalid + missing + unreadable
     if input_issues:
         return 1
     if not available:

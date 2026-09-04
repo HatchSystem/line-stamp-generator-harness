@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import subprocess
 import sys
 import zipfile
@@ -19,6 +20,7 @@ from check_publish_ready import (
     check_ai_provenance,
     check_ai_declaration,
     check_boolean,
+    check_copyright,
     check_license_proof,
     check_project_layout,
     check_sales_area,
@@ -55,15 +57,52 @@ from project import (
     parse_session_for_migration,
     p0_updates,
     project_directory,
+    projects_root,
+    remove_session_keys,
     session_migration_updates,
     update_session_text,
     valid_slug,
 )
 from project_context import FACADE_PROJECT_ENV, enforce_facade_project
-from session_contract import load_static_session
-from validate_pack import validate_png, validate_zip
+from session_contract import (
+    load_static_session,
+    require_complete_text_evidence,
+    require_review_evidence,
+    sha256_file,
+)
+from validate_pack import validate_png, validate_stamp_sources, validate_zip
 from verify_text import next_version, verification_scope, verification_session
 import transaction_utils
+
+
+def write_review_evidence_fixture(project: Path, count: int, version: int = 1) -> None:
+    """Create a compact but structurally real P5 review evidence pair for tests."""
+    review_dir = project / "review"
+    review_dir.mkdir(exist_ok=True)
+    image_path = review_dir / f"review-v{version:02d}.png"
+    if not image_path.exists():
+        image_path.write_bytes(b"review fixture")
+    evidence = {
+        "schema_version": 1,
+        "version": version,
+        "project": project.name,
+        "gate": "P5",
+        "session_count": count,
+        "review_file": image_path.name,
+        "review_sha256": sha256_file(image_path),
+        "stamps": [
+            {
+                "id": index,
+                "file": f"stamp{index:02d}.png",
+                "sha256": sha256_file(project / "stamps" / f"stamp{index:02d}.png"),
+            }
+            for index in range(1, count + 1)
+        ],
+    }
+    (review_dir / f"review-v{version:02d}.json").write_text(
+        json.dumps(evidence, ensure_ascii=False, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
 
 
 def main() -> None:
@@ -83,6 +122,22 @@ def main() -> None:
     if not __debug__:
         raise RuntimeError("self-test requires assertions; rerun Python without -O/PYTHONOPTIMIZE")
 
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        target = root / "target"
+        target.mkdir()
+        try:
+            (root / "projects").symlink_to(target, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pass
+        else:
+            try:
+                projects_root(str(root))
+            except ProjectPathError:
+                pass
+            else:
+                raise AssertionError("project CLI accepted a symlinked projects directory")
+
     assert counted_length("abc") == 3
     assert counted_length("あいう") == 6
     assert counted_length("Aあ") == 3
@@ -96,11 +151,17 @@ def main() -> None:
     url_errors: list[str] = []
     check_text("sample", "example.com", (1, 50), False, url_errors)
     assert any("URL" in message for message in url_errors)
+    invisible_errors: list[str] = []
+    check_text("sample", "L\u200bINE Stickers", (1, 50), False, invisible_errors)
+    assert any("invisible or control" in message for message in invisible_errors)
     sales_errors: list[str] = []
     check_sales_area({"sales_area": "all", "sales_countries": []}, sales_errors)
     assert not sales_errors
     check_sales_area({"sales_area": "some", "sales_countries": []}, sales_errors)
     assert sales_errors
+    malformed_sales_errors: list[str] = []
+    check_sales_area({"sales_area": [], "sales_countries": []}, malformed_sales_errors)
+    assert malformed_sales_errors
     boolean_errors: list[str] = []
     assert check_boolean({"ai_used": 1}, "ai_used", boolean_errors) is None
     assert boolean_errors
@@ -108,10 +169,10 @@ def main() -> None:
         project_dir = Path(directory)
         (project_dir / "refs").mkdir()
         proof_errors: list[str] = []
+        check_license_proof({}, project_dir, proof_errors)
+        assert not proof_errors
         check_license_proof(
             {"license_proof": {"status": "not-required", "reference": ""}},
-            {"rights": "own"},
-            False,
             project_dir,
             proof_errors,
         )
@@ -119,8 +180,6 @@ def main() -> None:
         licensed_errors: list[str] = []
         check_license_proof(
             {"license_proof": {"status": "user-confirmed", "reference": "missing.txt"}},
-            {"rights": "licensed"},
-            False,
             project_dir,
             licensed_errors,
         )
@@ -129,8 +188,6 @@ def main() -> None:
         empty_license_errors: list[str] = []
         check_license_proof(
             {"license_proof": {"status": "user-confirmed", "reference": "refs/license.txt"}},
-            {"rights": "licensed"},
-            False,
             project_dir,
             empty_license_errors,
         )
@@ -139,8 +196,6 @@ def main() -> None:
         licensed_errors = []
         check_license_proof(
             {"license_proof": {"status": "user-confirmed", "reference": "refs/license.txt"}},
-            {"rights": "licensed"},
-            False,
             project_dir,
             licensed_errors,
         )
@@ -148,12 +203,17 @@ def main() -> None:
         traversal_errors: list[str] = []
         check_license_proof(
             {"license_proof": {"status": "user-confirmed", "reference": "../outside.txt"}},
-            {"rights": "licensed"},
-            False,
             project_dir,
             traversal_errors,
         )
         assert traversal_errors
+        malformed_license_errors: list[str] = []
+        check_license_proof(
+            {"license_proof": {"status": [], "reference": ""}},
+            project_dir,
+            malformed_license_errors,
+        )
+        assert malformed_license_errors
         provenance_errors: list[str] = []
         check_ai_provenance(project_dir, True, provenance_errors)
         assert provenance_errors
@@ -189,13 +249,41 @@ def main() -> None:
         complete_text_scope_errors: list[str] = []
         check_ai_provenance(project_dir, True, complete_text_scope_errors, {"text"})
         assert not complete_text_scope_errors
+        provenance_path = project_dir / "meta" / "ai-provenance.md"
+        complete_provenance = provenance_path.read_text(encoding="utf-8")
+        provenance_path.write_text(
+            complete_provenance.replace(
+                "prompt_reference: meta/approved-prompt.txt",
+                "prompt_reference: meta/ai-provenance.md",
+            ),
+            encoding="utf-8",
+        )
+        self_reference_errors: list[str] = []
+        check_ai_provenance(project_dir, True, self_reference_errors, {"text"})
+        assert any("must not refer" in message for message in self_reference_errors)
+        provenance_path.write_text(
+            "# AI provenance\n\n"
+            "## Prompt or reproducibility note\n"
+            "- ai_used: true\n"
+            "- scope: character-design, stamp-images, text\n"
+            "- tool_and_model: ExampleTool ExampleModel\n"
+            "- generated_at: 2000-01-01\n"
+            "- prompt_reference: inline below\n"
+            "- reviewed_by_user_at_gate: P2, P5\n"
+            "concrete prompt text\n",
+            encoding="utf-8",
+        )
+        inline_order_errors: list[str] = []
+        check_ai_provenance(project_dir, True, inline_order_errors, {"text"})
+        assert any("before the prompt note heading" in message for message in inline_order_errors)
+        provenance_path.write_text(complete_provenance, encoding="utf-8")
         prompt_path.write_text("", encoding="utf-8")
         empty_prompt_errors: list[str] = []
         check_ai_provenance(project_dir, True, empty_prompt_errors)
         assert any("must not be empty" in message for message in empty_prompt_errors)
 
     complete_session = {
-        "schema_version": "2",
+        "schema_version": "3",
         "project": "demo",
         "materials": "received",
         "source": "character",
@@ -205,16 +293,21 @@ def main() -> None:
         "text_check": "n/a",
         "gate": "P7",
         "character": "Hatch",
-        "rights": "own",
-        "adult": "n/a",
-        "consent": "n/a",
         "publish": "yes",
         "validation": "ok",
+        "review_version": "1",
         "submission": "not-started",
     }
     session_errors: list[str] = []
     check_session_state(complete_session, Path("projects/demo/SESSION.md"), session_errors)
     assert not session_errors
+    deprecated_session_errors: list[str] = []
+    check_session_state(
+        dict(complete_session, consent="yes"),
+        Path("projects/demo/SESSION.md"),
+        deprecated_session_errors,
+    )
+    assert any("deprecated fields" in message for message in deprecated_session_errors)
     incomplete_session_errors: list[str] = []
     check_session_state(
         {key: value for key, value in complete_session.items() if key != "count"},
@@ -222,6 +315,13 @@ def main() -> None:
         incomplete_session_errors,
     )
     assert any("count" in message for message in incomplete_session_errors)
+    oversized_count_errors: list[str] = []
+    check_session_state(
+        dict(complete_session, count="9" * 5000),
+        Path("projects/demo/SESSION.md"),
+        oversized_count_errors,
+    )
+    assert oversized_count_errors
 
     for old_publish, expected in {
         "yes": "yes",
@@ -231,29 +331,47 @@ def main() -> None:
     }.items():
         updates, errors = session_migration_updates({"publish": old_publish, "gate": "P0"})
         assert not errors
-        assert updates["schema_version"] == "2"
+        assert updates["schema_version"] == "3"
         assert updates["materials"] == "pending"
         assert updates.get("publish", old_publish) == expected
     _, errors = session_migration_updates({"publish": "surprise", "gate": "P0"})
     assert errors
     _, errors = session_migration_updates(
-        {"schema_version": "3", "publish": "yes", "materials": "received"}
+        {"schema_version": "4", "publish": "yes", "materials": "received"}
     )
     assert errors
+    pending_legacy = {
+        "schema_version": "1",
+        "publish": "yes",
+        "gate": "P4",
+        "materials": "pending",
+    }
+    _, errors = session_migration_updates(pending_legacy, materials_available=False)
+    assert errors
+    updates, errors = session_migration_updates(pending_legacy, materials_available=True)
+    assert not errors and updates["materials"] == "received"
     updates, errors = session_migration_updates(
         {"schema_version": "02", "publish": "yes", "materials": "received"}
     )
-    assert not errors and updates["schema_version"] == "2"
+    assert not errors and updates["schema_version"] == "3"
 
-    old_session = "# SESSION\n\n- project: sample\n- publish: private\n- gate: P6\n- notes: keep me\n"
+    old_session = (
+        "# SESSION\n\n- project: sample\n- publish: private\n- gate: P6\n"
+        "- rights: own\n- adult: yes\n- consent: yes\n- notes: keep me\n"
+    )
     parsed, errors = parse_session_for_migration(old_session)
     assert not errors
     updates, errors = session_migration_updates(parsed, materials_available=True)
     assert not errors
-    migrated_session = update_session_text(old_session, updates)
-    assert "- schema_version: 2" in migrated_session
+    migrated_session = remove_session_keys(
+        update_session_text(old_session, updates), {"adult", "consent", "rights"}
+    )
+    assert "- schema_version: 3" in migrated_session
     assert "- publish: local-only" in migrated_session
     assert "- materials: received" in migrated_session
+    assert not any(
+        f"- {key}:" in migrated_session for key in ("adult", "consent", "rights")
+    )
     assert "- gate: P6" in migrated_session and "- notes: keep me" in migrated_session
     _, duplicate_errors = parse_session_for_migration("- publish: yes\n- publish: no\n")
     assert duplicate_errors
@@ -288,20 +406,34 @@ def main() -> None:
     ai_declaration_errors = []
     check_ai_declaration({"text_mode": "font"}, False, ai_declaration_errors)
     assert not ai_declaration_errors
+    copyright_errors: list[str] = []
+    check_copyright("2026LINE", copyright_errors)
+    assert copyright_errors
 
-    migrated_meta, changes, errors = migrated_submission({"private": False})
+    migrated_meta, changes, errors = migrated_submission(
+        {
+            "private": False,
+            "license_proof": {"status": "not-required", "reference": ""},
+        }
+    )
     assert not errors and changes
-    assert migrated_meta["schema_version"] == 2
+    assert migrated_meta["schema_version"] == 3
     assert migrated_meta["sales_start"] == "manual"
     assert migrated_meta["price_confirmed"] is False
     assert migrated_meta["store_visibility"] == "public" and "private" not in migrated_meta
+    assert "license_proof" not in migrated_meta
     canonical_meta = {
-        "schema_version": 2,
+        "schema_version": 3,
         "sales_start": "manual",
         "store_visibility": "private",
         "price_confirmed": False,
     }
     assert migrated_submission(canonical_meta) == (canonical_meta, [], [])
+    provided_proof_meta = dict(
+        canonical_meta,
+        license_proof={"status": "user-confirmed", "reference": "refs/license.pdf"},
+    )
+    assert migrated_submission(provided_proof_meta) == (provided_proof_meta, [], [])
     _, _, errors = migrated_submission(
         {"sales_start": "manual", "private": False, "price_confirmed": 1}
     )
@@ -316,6 +448,10 @@ def main() -> None:
     assert errors
     _, _, errors = migrated_submission(
         {"schema_version": "9" * 1000, "sales_start": "manual", "store_visibility": "public"}
+    )
+    assert errors
+    _, _, errors = migrated_submission(
+        {"private": False, "store_visibility": [], "sales_start": "manual"}
     )
     assert errors
 
@@ -347,26 +483,16 @@ def main() -> None:
             "character_name": "Hatch",
             "sample_candidates": 1,
             "publish": "yes",
-            "rights": "own",
-            "adult": "yes",
-            "consent": "yes",
         }
-        _, intake_errors = p0_updates(
-            Namespace(**dict(base_intake, adult="unknown", publish="local-only"))
-        )
+        _, intake_errors = p0_updates(Namespace(**dict(base_intake, publish="local-only")))
         assert not intake_errors
-        _, intake_errors = p0_updates(
-            Namespace(**dict(base_intake, adult="unknown", publish="yes"))
-        )
-        assert intake_errors
-        character_intake = dict(
-            base_intake,
-            source="character",
-            adult="n/a",
-            consent="n/a",
-        )
+        character_intake = dict(base_intake, source="character")
         _, intake_errors = p0_updates(Namespace(**character_intake))
         assert not intake_errors
+        _, intake_errors = p0_updates(
+            Namespace(**dict(character_intake, character_name="pending"))
+        )
+        assert intake_errors
         before_rejection = session_path.read_bytes()
         with redirect_stdout(sink), redirect_stderr(sink):
             assert cmd_confirm_p0(Namespace(**base_intake)) == 1
@@ -378,17 +504,19 @@ def main() -> None:
             assert cmd_confirm_p0(Namespace(**base_intake)) == 1
         assert session_path.read_bytes() == before_rejection
         source_material.write_bytes(b"p0 fixture")
-        invalid_intake = dict(base_intake, consent="no")
+        session_with_deprecated_field = session_path.read_text(encoding="utf-8").replace(
+            "- publish: unknown\n", "- publish: unknown\n- consent: yes\n"
+        )
+        session_path.write_text(session_with_deprecated_field, encoding="utf-8")
         with redirect_stdout(sink), redirect_stderr(sink):
-            assert cmd_confirm_p0(Namespace(**invalid_intake)) == 1
-        assert session_path.read_bytes() == before_rejection
-
+            assert cmd_confirm_p0(Namespace(**base_intake)) == 1
+        session_path.write_bytes(before_rejection)
         with redirect_stdout(sink), redirect_stderr(sink):
             assert cmd_confirm_p0(Namespace(**base_intake)) == 0
         confirmed = parse_session_for_migration(session_path.read_text(encoding="utf-8"))[0]
         assert confirmed["gate"] == "P1"
         assert confirmed["character"] == "Hatch"
-        assert confirmed["rights"] == "own" and confirmed["consent"] == "yes"
+        assert not any(key in confirmed for key in ("adult", "consent", "rights"))
         after_confirmation = session_path.read_bytes()
         with redirect_stdout(sink), redirect_stderr(sink):
             assert cmd_confirm_p0(Namespace(**base_intake)) == 1
@@ -446,12 +574,14 @@ def main() -> None:
         (harness / "projects" / "ACTIVE").write_text("demo\n", encoding="utf-8")
         (project / "SESSION.md").write_text(
             "# SESSION\n\n"
-            "- schema_version: 2\n"
+            "- schema_version: 3\n"
             "- project: demo\n"
+            "- materials: received\n"
             "- count: 8\n"
             "- text: yes\n"
             "- text_mode: ai\n"
             "- text_check: not-run\n"
+            "- review_version: 0\n"
             "- gate: P5\n",
             encoding="utf-8",
         )
@@ -528,6 +658,35 @@ def main() -> None:
         assert load_static_session(project, {"P5"})["text_mode"] == "ai"
         p5_session_source = (project / "SESSION.md").read_text(encoding="utf-8")
         (project / "SESSION.md").write_text(
+            p5_session_source + "- rights: own\n", encoding="utf-8"
+        )
+        try:
+            load_static_session(project, {"P5"})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("artifact command accepted deprecated SESSION fields")
+        (project / "SESSION.md").write_text(p5_session_source, encoding="utf-8")
+        (project / "SESSION.md").write_text(
+            p5_session_source.replace("- materials: received", "- materials: pending"),
+            encoding="utf-8",
+        )
+        try:
+            load_static_session(project, {"P5"})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("artifact command accepted materials=pending after P0")
+        try:
+            expected_review_inputs(project)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("contact sheet accepted materials=pending after P0")
+        _, pending_verification_errors = verification_session(project)
+        assert pending_verification_errors
+        (project / "SESSION.md").write_text(p5_session_source, encoding="utf-8")
+        (project / "SESSION.md").write_text(
             p5_session_source.replace("- gate: P5", "- gate: P6"), encoding="utf-8"
         )
         try:
@@ -560,6 +719,76 @@ def main() -> None:
             raise AssertionError("P4 verification accepted a check without --only 1")
         (project / "review" / "text-check-v02.json").write_text("{}\n", encoding="utf-8")
         assert next_version(project / "review") == 3
+        manifest_path = project / "manifest.json"
+        manifest_path.write_text('{"items": "P5 evidence fixture"}\n', encoding="utf-8")
+        evidence_rows = [
+            {
+                "id": index,
+                "file": f"stamp{index:02d}.png",
+                "sha256": sha256_file(project / "stamps" / f"stamp{index:02d}.png"),
+                "expected": f"line {index}",
+                "ocr": "",
+                "status": "visual-required",
+                "similarity": None,
+            }
+            for index in range(1, 9)
+        ]
+        evidence = {
+            "schema_version": 1,
+            "version": 3,
+            "project": "demo",
+            "gate": "P5",
+            "scope": "all",
+            "session_count": 8,
+            "manifest_sha256": sha256_file(manifest_path),
+            "ocr_available": False,
+            "reason": "fixture",
+            "rows": evidence_rows,
+        }
+        (project / "review" / "text-check-v03.json").write_text(
+            json.dumps(evidence, ensure_ascii=False, allow_nan=False) + "\n",
+            encoding="utf-8",
+        )
+        (project / "review" / "text-check-v03.md").write_text(
+            "# complete P5 fixture\n", encoding="utf-8"
+        )
+        require_complete_text_evidence(project, 8)
+        write_review_evidence_fixture(project, 8)
+        require_review_evidence(project, 8, 1)
+        malformed_evidence = dict(evidence)
+        malformed_evidence["rows"] = [dict(row) for row in evidence_rows]
+        malformed_evidence["rows"][0]["status"] = []
+        (project / "review" / "text-check-v03.json").write_text(
+            json.dumps(malformed_evidence, ensure_ascii=False, allow_nan=False) + "\n",
+            encoding="utf-8",
+        )
+        try:
+            require_complete_text_evidence(project, 8)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("P5 evidence accepted a non-string row status")
+        (project / "review" / "text-check-v03.json").write_text(
+            json.dumps(evidence, ensure_ascii=False, allow_nan=False) + "\n",
+            encoding="utf-8",
+        )
+        p6_approved_source = p5_session_source.replace(
+            "- text_check: not-run", "- text_check: ok"
+        ).replace("- review_version: 0", "- review_version: 1").replace(
+            "- gate: P5", "- gate: P6"
+        )
+        (project / "SESSION.md").write_text(p6_approved_source, encoding="utf-8")
+        assert load_static_session(project, {"P6"})["text_check"] == "ok"
+        original_stamp = (project / "stamps" / "stamp01.png").read_bytes()
+        (project / "stamps" / "stamp01.png").write_bytes(b"tampered")
+        try:
+            load_static_session(project, {"P6"})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("P6 accepted AI text evidence after a stamp changed")
+        (project / "stamps" / "stamp01.png").write_bytes(original_stamp)
+        (project / "SESSION.md").write_text(p5_session_source, encoding="utf-8")
 
         uppercase_source = project / "raw" / "stamp01.PNG"
         uppercase_source.write_bytes(b"fixture")
@@ -679,12 +908,13 @@ def main() -> None:
         with redirect_stdout(sink), redirect_stderr(sink):
             assert cmd_migrate(Namespace(root=str(root), apply=True)) == 0
         migrated_values = parse_session_for_migration(session_path.read_text(encoding="utf-8"))[0]
-        assert migrated_values["schema_version"] == "2"
+        assert migrated_values["schema_version"] == "3"
         assert migrated_values["materials"] == "received"
+        assert not any(key in migrated_values for key in ("adult", "consent", "rights"))
         written_meta = json.loads(submission_path.read_text(encoding="utf-8"))
-        assert written_meta["schema_version"] == 2 and written_meta["sales_start"] == "manual"
-        assert list(project.glob("SESSION.md.pre-v2-*.bak"))
-        assert list((project / "meta").glob("submission.json.pre-v2-*.bak"))
+        assert written_meta["schema_version"] == 3 and written_meta["sales_start"] == "manual"
+        assert list(project.glob("SESSION.md.pre-v3-*.bak"))
+        assert list((project / "meta").glob("submission.json.pre-v3-*.bak"))
         backups_after_first_apply = list(project.rglob("*.bak"))
         with redirect_stdout(sink), redirect_stderr(sink):
             assert cmd_migrate(Namespace(root=str(root), apply=True)) == 0
@@ -803,6 +1033,38 @@ def main() -> None:
         validate_png(opaque_rgb_path, None, (80, 80), (370, 320), 0, opaque_errors, [])
         assert any("no fully transparent background" in message for message in opaque_errors)
 
+        pinhole_path = root / "pinhole.png"
+        pinhole = Image.new("RGBA", (80, 80), (20, 80, 40, 255))
+        pinhole.putpixel((40, 40), (0, 0, 0, 0))
+        save_png(pinhole, pinhole_path)
+        pinhole_errors: list[str] = []
+        validate_png(pinhole_path, None, (80, 80), (370, 320), 0, pinhole_errors, [])
+        assert any("exterior transparent background" in message for message in pinhole_errors)
+
+        corner_only_path = root / "corner-only.png"
+        corner_only = Image.new("RGBA", (80, 80), (20, 80, 40, 255))
+        corner_only.putpixel((0, 0), (0, 0, 0, 0))
+        save_png(corner_only, corner_only_path)
+        corner_only_errors: list[str] = []
+        validate_png(
+            corner_only_path, None, (80, 80), (370, 320), 0, corner_only_errors, []
+        )
+        assert any("exterior transparent background" in message for message in corner_only_errors)
+
+        ring_path = root / "transparent-ring.png"
+        ring = Image.new("RGBA", (80, 80), (20, 80, 40, 255))
+        ring_pixels = ring.load()
+        for x in range(80):
+            ring_pixels[x, 0] = (0, 0, 0, 0)
+            ring_pixels[x, 79] = (0, 0, 0, 0)
+        for y in range(80):
+            ring_pixels[0, y] = (0, 0, 0, 0)
+            ring_pixels[79, y] = (0, 0, 0, 0)
+        save_png(ring, ring_path)
+        ring_errors: list[str] = []
+        validate_png(ring_path, None, (80, 80), (370, 320), 0, ring_errors, [])
+        assert any("exterior transparent background" in message for message in ring_errors)
+
         blank_path = root / "blank.png"
         save_png(Image.new("RGBA", (80, 80), (0, 0, 0, 0)), blank_path)
         blank_errors: list[str] = []
@@ -870,6 +1132,25 @@ def main() -> None:
         validate_zip(missing_local_zip, root, ["missing.png"], missing_local_errors)
         assert any("local file is missing" in message for message in missing_local_errors)
 
+        symlink_member_zip = root / "symlink-member.zip"
+        symlink_info = zipfile.ZipInfo("valid.png")
+        symlink_info.create_system = 3
+        symlink_info.external_attr = (stat.S_IFLNK | 0o777) << 16
+        with zipfile.ZipFile(symlink_member_zip, "w") as archive:
+            archive.writestr(symlink_info, valid_path.read_bytes())
+        symlink_member_errors: list[str] = []
+        validate_zip(symlink_member_zip, root, ["valid.png"], symlink_member_errors)
+        assert any("not a regular file" in message for message in symlink_member_errors)
+
+        dos_directory_zip = root / "dos-directory-member.zip"
+        dos_directory_info = zipfile.ZipInfo("valid.png")
+        dos_directory_info.external_attr = 0x10
+        with zipfile.ZipFile(dos_directory_zip, "w") as archive:
+            archive.writestr(dos_directory_info, valid_path.read_bytes())
+        dos_directory_errors: list[str] = []
+        validate_zip(dos_directory_zip, root, ["valid.png"], dos_directory_errors)
+        assert any("is a directory" in message for message in dos_directory_errors)
+
         corrupt_zip = root / "corrupt-member.zip"
         with zipfile.ZipFile(corrupt_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             archive.writestr("valid.png", valid_path.read_bytes())
@@ -899,12 +1180,14 @@ def main() -> None:
         (project.parent / "ACTIVE").write_text("pack\n", encoding="utf-8")
         (project / "SESSION.md").write_text(
             "# SESSION\n\n"
-            "- schema_version: 2\n"
+            "- schema_version: 3\n"
             "- project: pack\n"
+            "- materials: received\n"
             "- count: 8\n"
             "- text: yes\n"
             "- text_mode: font\n"
             "- text_check: n/a\n"
+            "- review_version: 1\n"
             "- gate: P6\n",
             encoding="utf-8",
         )
@@ -914,6 +1197,7 @@ def main() -> None:
                 (10, 10, 89, 89), fill=(20 + index, 80, 40, 255)
             )
             save_png(stamp, source_dir / f"stamp{index:02d}.png")
+        write_review_evidence_fixture(project, 8)
 
         unrelated_path = outdir / "stamp-draft.png"
         unrelated_path.write_bytes(b"keep this unrelated draft")
@@ -932,6 +1216,18 @@ def main() -> None:
         assert nested_note.read_text(encoding="utf-8") == "keep this user directory"
         assert not list(outdir.glob(".line-stamp-package-*"))
         expected_stamp_names = [f"stamp{index:02d}.png" for index in range(1, 9)]
+        source_binding_errors: list[str] = []
+        validate_stamp_sources(project, outdir, expected_stamp_names, source_binding_errors)
+        assert not source_binding_errors
+        tampered_submission = Image.new("RGBA", (100, 100), (0, 0, 0, 0))
+        ImageDraw.Draw(tampered_submission).ellipse(
+            (10, 10, 89, 89), fill=(180, 30, 60, 255)
+        )
+        save_png(tampered_submission, outdir / "stamp01.png")
+        source_binding_errors = []
+        validate_stamp_sources(project, outdir, expected_stamp_names, source_binding_errors)
+        assert any("differs from reviewed" in message for message in source_binding_errors)
+        (outdir / "stamp01.png").write_bytes((source_dir / "stamp01.png").read_bytes())
         for name in expected_stamp_names:
             assert (outdir / name).read_bytes() == (source_dir / name).read_bytes()
 

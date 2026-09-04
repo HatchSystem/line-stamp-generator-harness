@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
+import json
 import math
 import os
 import re
@@ -11,44 +13,18 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 from project_context import enforce_facade_project
+from session_contract import load_static_session, read_regular_bytes, session_count
+from transaction_utils import exclusive_lock
 
 
 REVIEW_NAME_RE = re.compile(r"review-v([0-9]{2,})\.png")
+REVIEW_ARTIFACT_RE = re.compile(r"review-v([0-9]{2,})\.(?:json|png)")
 
 
 def expected_review_inputs(project_dir: Path) -> list[str]:
     """Return the exact P5 stamp filenames declared by the active SESSION."""
-    session_path = project_dir / "SESSION.md"
-    if session_path.is_symlink() or not session_path.is_file():
-        raise ValueError("review requires a regular non-symlink SESSION.md")
-    try:
-        lines = session_path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeError) as exc:
-        raise ValueError(f"cannot read SESSION.md as UTF-8: {exc}") from exc
-    values: dict[str, str] = {}
-    for line_number, line in enumerate(lines, start=1):
-        match = re.match(r"^-\s*([a-z_]+)\s*:\s*(.*)$", line.strip())
-        if not match:
-            continue
-        key, value = match.groups()
-        if key in values:
-            raise ValueError(f"SESSION key {key!r} is duplicated (line {line_number})")
-        values[key] = value.strip()
-    if values.get("schema_version") != "2":
-        raise ValueError("review requires SESSION schema_version=2")
-    if values.get("project") != project_dir.name:
-        raise ValueError(
-            f"SESSION project={values.get('project')!r} does not match {project_dir.name!r}"
-        )
-    if values.get("gate") != "P5":
-        raise ValueError(f"final contact sheet requires SESSION gate=P5 (found {values.get('gate')!r})")
-    try:
-        count = int(values.get("count", ""))
-    except ValueError as exc:
-        raise ValueError(f"SESSION count={values.get('count')!r} is not an integer") from exc
-    if count not in {8, 16, 24, 32, 40}:
-        raise ValueError(f"SESSION count={count!r} is not a supported static count")
-    return [f"stamp{index:02d}.png" for index in range(1, count + 1)]
+    session = load_static_session(project_dir, {"P5"})
+    return [f"stamp{index:02d}.png" for index in range(1, session_count(session) + 1)]
 
 
 def checked_stamp_files(input_dir: Path, expected_names: list[str]) -> list[Path]:
@@ -83,8 +59,11 @@ def checked_paths(input_value: str, output_value: str) -> tuple[Path, Path]:
     requested_version = int(name_match.group(1))
     if requested_version <= 0:
         raise ValueError("review versions start at v01")
-    if output.exists() or output.is_symlink():
-        raise FileExistsError(f"refusing to overwrite existing review artifact: {output}")
+    if output.name != f"review-v{requested_version:02d}.png":
+        raise ValueError("review filename must use canonical zero-padded version syntax")
+    evidence_output = output.with_suffix(".json")
+    if output.exists() or output.is_symlink() or evidence_output.exists() or evidence_output.is_symlink():
+        raise FileExistsError(f"refusing to overwrite existing review artifact pair: {output.stem}")
     if input_dir.is_symlink() or not input_dir.is_dir():
         raise ValueError("--input must be a regular project stamps/ directory")
     if input_dir.parent.is_symlink() or output.parent.is_symlink():
@@ -113,8 +92,8 @@ def checked_paths(input_value: str, output_value: str) -> tuple[Path, Path]:
         raise ValueError("--output must be inside the same project's review/ directory")
     existing_versions = [
         int(match.group(1))
-        for path in output.parent.glob("review-v*.png")
-        if (match := REVIEW_NAME_RE.fullmatch(path.name))
+        for path in output.parent.glob("review-v*.*")
+        if (match := REVIEW_ARTIFACT_RE.fullmatch(path.name))
     ]
     expected_version = max(existing_versions, default=0) + 1
     if requested_version != expected_version:
@@ -123,6 +102,31 @@ def checked_paths(input_value: str, output_value: str) -> tuple[Path, Path]:
             f"not {output.name}"
         )
     return resolved_input, output.parent.resolve() / output.name
+
+
+def write_review_pair(output: Path, image_payload: bytes, evidence_payload: bytes) -> None:
+    """Create the append-only PNG/JSON pair and remove only files created by this call on failure."""
+    created: list[tuple[Path, os.stat_result]] = []
+    try:
+        for path, payload in (
+            (output, image_payload),
+            (output.with_suffix(".json"), evidence_payload),
+        ):
+            with path.open("xb") as destination:
+                identity = os.fstat(destination.fileno())
+                created.append((path, identity))
+                written = destination.write(payload)
+                if written != len(payload):
+                    raise OSError(f"short write for review artifact: {written}/{len(payload)} bytes")
+    except BaseException:
+        for path, identity in reversed(created):
+            try:
+                current = path.stat(follow_symlinks=False)
+            except (FileNotFoundError, OSError):
+                continue
+            if not path.is_symlink() and os.path.samestat(identity, current):
+                path.unlink()
+        raise
 
 
 def main() -> None:
@@ -135,13 +139,20 @@ def main() -> None:
         raise ValueError("--cols must be from 1 through 40")
 
     input_dir, output = checked_paths(args.input, args.output)
-    expected_names = expected_review_inputs(input_dir.parent)
+    session = load_static_session(input_dir.parent, {"P5"})
+    expected_names = [
+        f"stamp{index:02d}.png" for index in range(1, session_count(session) + 1)
+    ]
     files = checked_stamp_files(input_dir, expected_names)
     if args.cols > len(files):
         raise ValueError("--cols must not exceed the SESSION stamp count")
     images = []
+    stamp_hashes: list[str] = []
     for path in files:
-        with Image.open(path) as opened:
+        source_payload = read_regular_bytes(path)
+        stamp_hashes.append(hashlib.sha256(source_payload).hexdigest())
+        with Image.open(io.BytesIO(source_payload)) as opened:
+            opened.load()
             images.append(opened.convert("RGBA"))
     preview_width = max(image.width for image in images)
     cell_width = preview_width * 2
@@ -184,23 +195,35 @@ def main() -> None:
     encoded = io.BytesIO()
     sheet.save(encoded, format="PNG", optimize=True)
     payload = encoded.getvalue()
-    identity = None
-    try:
-        with output.open("xb") as destination:
-            identity = os.fstat(destination.fileno())
-            written = destination.write(payload)
-            if written != len(payload):
-                raise OSError(f"short write for review artifact: {written}/{len(payload)} bytes")
-    except BaseException:
-        if identity is not None:
-            try:
-                current = output.stat(follow_symlinks=False)
-            except (FileNotFoundError, OSError):
-                current = None
-            if current is not None and not output.is_symlink() and os.path.samestat(identity, current):
-                output.unlink()
-        raise
-    print(f"wrote {output}")
+    version_match = REVIEW_NAME_RE.fullmatch(output.name)
+    if version_match is None:
+        raise ValueError("internal review filename validation failed")
+    version = int(version_match.group(1))
+    evidence = {
+        "schema_version": 1,
+        "version": version,
+        "project": input_dir.parent.name,
+        "gate": "P5",
+        "session_count": session_count(session),
+        "review_file": output.name,
+        "review_sha256": hashlib.sha256(payload).hexdigest(),
+        "stamps": [
+            {
+                "id": index,
+                "file": path.name,
+                "sha256": stamp_hash,
+            }
+            for index, (path, stamp_hash) in enumerate(
+                zip(files, stamp_hashes), start=1
+            )
+        ],
+    }
+    evidence_payload = (
+        json.dumps(evidence, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
+    ).encode("utf-8")
+    with exclusive_lock(output.parent / ".line-stamp-review.lock", "review evidence transaction"):
+        write_review_pair(output, payload, evidence_payload)
+    print(f"wrote {output} and {output.with_suffix('.json')}")
 
 
 if __name__ == "__main__":

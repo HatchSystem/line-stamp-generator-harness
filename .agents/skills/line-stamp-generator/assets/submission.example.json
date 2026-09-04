@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "count": 16,
   "title": {
     "ja": "ハッチくんの毎日スタンプ",
@@ -20,10 +20,6 @@
   "ai_used": true,
   "photo_used": false,
   "premium_participation": false,
-  "license_proof": {
-    "status": "not-required",
-    "reference": ""
-  },
   "tags": {
     "01": ["おはよう", "あいさつ"],
     "02": ["ありがとう", "感謝"]
