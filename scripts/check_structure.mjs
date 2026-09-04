@@ -2038,6 +2038,37 @@ function validateRootAdapter() {
       "共通層では製品固有の選択ツール名を使わず、構造化選択 UI と表現してください",
     );
   }
+
+  for (const policyFile of [
+    "AGENTS.md",
+    "README.md",
+    ".agents/skills/line-stamp-generator/SKILL.md",
+    ".agents/skills/line-stamp-generator/references/dialogue.md",
+    ".agents/skills/line-stamp-generator/references/security-and-rights.md",
+    ".agents/skills/line-stamp-generator/references/character-base.md",
+    ".agents/skills/line-stamp-generator/references/line-specs.md",
+  ]) {
+    const policyText = readText(policyFile);
+    check(
+      policyText.includes("歴史上の人物") && policyText.includes("確認対象外"),
+      "HISTORICAL_FIGURE_RIGHTS_EXCEPTION",
+      policyFile,
+      0,
+      "歴史上の人物は著作権・肖像権等の確認対象外であることを明記してください",
+    );
+  }
+  check(
+    readText(".agents/skills/line-stamp-generator/references/line-specs.md")
+      .includes("P0〜P8 で確認や証明要求を追加しない") &&
+      readText(".agents/skills/line-stamp-generator/references/line-specs.md")
+        .includes("LINE 公式審査の免除を意味しない") &&
+      readText(".agents/skills/line-stamp-generator/references/line-specs.md")
+        .includes("表示内容をユーザーへ報告して停止する"),
+    "HISTORICAL_FIGURE_OFFICIAL_REVIEW",
+    ".agents/skills/line-stamp-generator/references/line-specs.md",
+    0,
+    "歴史上の人物の内部チェックをP8まで除外し、LINE側の追加要求はユーザーへ報告して停止してください",
+  );
 }
 
 

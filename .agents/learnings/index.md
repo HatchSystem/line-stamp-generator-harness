@@ -2,6 +2,7 @@
 
 | 日付 | 要約 | 詳細 |
 |---|---|---|
+| 2026-09-05 | 歴史上の人物は内部の著作権・肖像権等の確認と著名人理由の受付拒否から除外し、公式審査とは分離する | [workflow.md](workflow.md#2026-09-05-historical-figure-exception) |
 | 2026-09-05 | 共通層は構造化選択の能力契約、製品アダプタは具体的ツール名を持ち、受付項目の廃止は schema migration と同時に行う | [workflow.md](workflow.md#2026-09-05-structured-intake-contract) |
 | 2026-09-05 | 申請時の追加資料は通常の必須確認から外し、外部から要求された場合の任意情報としてだけ検証する | [publish.md](publish.md#2026-09-05-optional-supporting-evidence) |
 | 2026-09-03 | 新規プロジェクト作成とP0確定を分け、素材実体と全回答の検証後だけP1へ進める | [workflow.md](workflow.md#2026-09-03-p0-state-transition) |
