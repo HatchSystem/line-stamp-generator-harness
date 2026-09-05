@@ -15,6 +15,7 @@
 - `node scripts/hooks/self_test.mjs`: PASS
 - `git diff --check`: PASS
 - `python scripts/line_stamp.py self-test`: ローカルにPython実行系がないため未実行。コミット・プッシュ後のGitHub Actions 4ジョブで確認する
+- GitHub Actions run 33953035667: Ubuntuの品質・互換性2ジョブはPASS。Windows / macOSで同種の未正規化reviewパスassertionが残っていることが判明し、期待値を `resolve()` する追加修正を行った
 
 ## /review
 

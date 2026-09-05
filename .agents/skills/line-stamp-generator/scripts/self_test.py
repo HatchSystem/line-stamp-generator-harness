@@ -825,8 +825,8 @@ def main() -> None:
         review_input, review_output = checked_review_paths(
             str(project / "stamps"), str(project / "review" / "review-v01.png")
         )
-        assert review_input == project / "stamps"
-        assert review_output == project / "review" / "review-v01.png"
+        assert review_input == (project / "stamps").resolve()
+        assert review_output == (project / "review" / "review-v01.png").resolve()
         assert expected_review_inputs(project) == [
             f"stamp{index:02d}.png" for index in range(1, 9)
         ]
