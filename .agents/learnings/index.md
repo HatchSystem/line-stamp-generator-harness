@@ -2,8 +2,9 @@
 
 | 日付 | 要約 | 詳細 |
 |---|---|---|
+| 2026-09-06 | 質問は処理を区切って保存した後だけ行い、回答まで次の作業を始めない | [workflow.md](workflow.md#2026-09-06-question-timing-boundary) |
 | 2026-09-06 | AI文字は生成AIの目視記録へ簡素化し、旧証跡の読み取り互換と画像品質検証を維持する | [pipeline.md](pipeline.md#2026-09-06-ai-visual-text-review) |
-| 2026-09-06 | 対話を通常チャットへ変更するときは共通手順・製品アダプタ・構成検査を同時に揃える | [workflow.md](workflow.md#2026-09-06-chat-dialogue-contract) |
+| 2026-09-06 | 【同日追加指示あり】対話変更は共通手順・製品アダプタ・構成検査を同時に揃える | [workflow.md](workflow.md#2026-09-06-chat-dialogue-contract) |
 | 2026-09-05 | クロスプラットフォームfixtureは正規化済み期待値と有効入力を使い、最低Python・最新Python・OS差を重複なくCIで分担する | [workflow.md](workflow.md#2026-09-05-cross-platform-ci-fixtures) |
 | 2026-09-05 | P1/P2を版付き証跡で固定し、変更時に下流承認を無効化する | [workflow.md](workflow.md#2026-09-05-versioned-design-contract) |
 | 2026-09-05 | 【旧方針・9/6更新】AI文字の自動検査と文字領域マスク、安全余白、全点一覧の検証 | [pipeline.md](pipeline.md#2026-09-05-image-quality-evidence) |

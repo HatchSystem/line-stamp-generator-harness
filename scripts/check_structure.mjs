@@ -2168,12 +2168,14 @@ function validateRootAdapter() {
     const adapterText = readText(adapter);
     check(
       /通常のチャット/.test(adapterText) &&
-        /AskUserQuestion[^。\n]*使わない/.test(adapterText) &&
+        /AskUserQuestion[^。\n]*作業の区切り後にのみ使用/.test(adapterText) &&
+        /回答を受けるまで次の作業を始めない/.test(adapterText) &&
+        /環境・モードで利用できない/.test(adapterText) &&
         !/フォールバック|最大3問/.test(adapterText),
-      "CLAUDE_CHAT_CHOICES",
+      "CLAUDE_QUESTION_BOUNDARY",
       adapter,
       0,
-      "質問と承認は通常のチャットで行い、質問ツールを使わないことを明記してください",
+      "質問ツールは作業の区切り後だけ使用し、回答待ちと利用不可時の通常チャットを明記してください",
     );
   }
   for (const shared of [
@@ -2187,6 +2189,24 @@ function validateRootAdapter() {
       shared,
       0,
       "共通層では製品固有の選択ツール名を使わず、通常のチャットでの対話を明記してください",
+    );
+  }
+
+  for (const shared of [
+    "AGENTS.md",
+    ".agents/skills/line-stamp-generator/references/dialogue.md",
+  ]) {
+    const guidance = readText(shared);
+    check(
+      /質問・承認は必ず作業の区切り後/.test(guidance) &&
+        /完了または安全に停止/.test(guidance) &&
+        /途中結果を保存/.test(guidance) &&
+        /回答を受けるまで次の作業を始めない/.test(guidance) &&
+        /未応答を承認扱いにしない|未応答を承認扱いにせず/.test(guidance),
+      "SHARED_QUESTION_BOUNDARY",
+      shared,
+      0,
+      "質問前に処理を区切って保存し、回答までは次の作業を始めない条件を明記してください",
     );
   }
 
