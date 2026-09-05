@@ -52,7 +52,21 @@ def usage() -> str:
     )
 
 
+def configure_utf8_stdio() -> None:
+    """Keep redirected Windows output usable when the host code page is narrow."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (OSError, ValueError):
+            # Embedded hosts may expose an immutable stream; their wrapper owns encoding.
+            pass
+
+
 def main() -> int:
+    configure_utf8_stdio()
     if len(sys.argv) < 2 or sys.argv[1] in {"-h", "--help"}:
         print(usage())
         return 0

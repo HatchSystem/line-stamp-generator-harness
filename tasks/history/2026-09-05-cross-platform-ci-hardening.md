@@ -11,11 +11,12 @@
 ## 確認結果
 
 - `node --check scripts/check_structure.mjs`: PASS
-- `node scripts/check_structure.mjs`: PASS（553 checks）
+- `node scripts/check_structure.mjs`: PASS（554 checks）
 - `node scripts/hooks/self_test.mjs`: PASS
 - `git diff --check`: PASS
 - `python scripts/line_stamp.py self-test`: ローカルにPython実行系がないため未実行。コミット・プッシュ後のGitHub Actions 4ジョブで確認する
 - GitHub Actions run 33953035667: Ubuntuの品質・互換性2ジョブはPASS。Windows / macOSで同種の未正規化reviewパスassertionが残っていることが判明し、期待値を `resolve()` する追加修正を行った
+- GitHub Actions run 33953157707: Ubuntu 2件とmacOSはPASS。Windowsはcp1252へリダイレクトされた日本語ヘルプで `UnicodeEncodeError` となったため、公開CLI入口でstdout/stderrをUTF-8へ構成し、`PYTHONIOENCODING=cp1252` の回帰試験を追加した
 
 ## /review
 

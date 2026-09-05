@@ -1009,6 +1009,15 @@ function validateFacade(files) {
   );
   check(/^def\s+main\s*\(/m.test(facadeText), "FACADE_MAIN", FACADE_FILE, 0, "facade に main() がありません");
   check(
+    /def\s+configure_utf8_stdio\s*\(/.test(facadeText) &&
+      /reconfigure\(encoding=["']utf-8["'],\s*errors=["']backslashreplace["']\)/.test(facadeText) &&
+      /def\s+main\s*\([^)]*\)\s*[^\n]*:\s*\n\s+configure_utf8_stdio\(\)/.test(facadeText),
+    "FACADE_UTF8_STDIO",
+    FACADE_FILE,
+    0,
+    "公開CLIは狭いWindowsコードページへリダイレクトされてもUTF-8でヘルプを出力してください",
+  );
+  check(
     /script_dir\s*=\s*repo_root\s*\/\s*["']\.agents["']\s*\/\s*["']skills["']\s*\/\s*["']line-stamp-generator["']\s*\/\s*["']scripts["']/.test(facadeText) &&
       /script_path\s*=\s*script_dir\s*\/\s*script_name/.test(facadeText),
     "FACADE_SCRIPT_DIR",

@@ -1717,10 +1717,13 @@ def main() -> None:
         "check-publish-ready": "check_publish_ready.py",
         "self-test": "self_test.py",
     }
+    narrow_stdio_environment = dict(os.environ)
+    narrow_stdio_environment["PYTHONIOENCODING"] = "cp1252"
     for command, implementation in public_commands.items():
         result = subprocess.run(
             [sys.executable, str(facade), command, "--help"],
             cwd=repo_root,
+            env=narrow_stdio_environment,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=False,
