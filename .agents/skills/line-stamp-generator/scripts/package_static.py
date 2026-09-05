@@ -11,7 +11,12 @@ from PIL import Image
 
 from image_utils import fit_canvas, sanitize_alpha, save_png, trim_alpha
 from project_context import enforce_facade_project
-from session_contract import load_static_session, session_count
+from session_contract import (
+    load_static_session,
+    project_stamp_name,
+    session_count,
+    submission_stamp_name,
+)
 from transaction_utils import ArtifactRollbackError, exclusive_lock, install_files_transaction
 
 
@@ -114,16 +119,24 @@ def package_static(
     session = load_static_session(source_dir.parent, {"P6"})
     if count != session_count(session):
         raise ValueError(f"--count {count} differs from SESSION count {session['count']}")
-    expected = [source_dir / f"stamp{index:02d}.png" for index in range(1, count + 1)]
-    missing = [path.name for path in expected if path.is_symlink() or not path.is_file()]
+    stamp_pairs = [
+        (source_dir / project_stamp_name(index), submission_stamp_name(index))
+        for index in range(1, count + 1)
+    ]
+    missing = [
+        source.name
+        for source, _ in stamp_pairs
+        if source.is_symlink() or not source.is_file()
+    ]
     if missing:
         raise FileNotFoundError(f"Missing stamps: {missing}")
 
-    managed_image_names = {"main.png", "tab.png", *(path.name for path in expected)}
+    submitted_stamp_names = [submitted_name for _, submitted_name in stamp_pairs]
+    managed_image_names = {"main.png", "tab.png", *submitted_stamp_names}
     zip_name = checked_zip_name(zip_name, managed_image_names)
     hero_dir = checked_character_dir if checked_character_dir else source_dir
-    main_source = trim_alpha(load_rgba(hero_dir / f"stamp{main_index:02d}.png"))
-    tab_source = trim_alpha(load_rgba(hero_dir / f"stamp{tab_index:02d}.png"))
+    main_source = trim_alpha(load_rgba(hero_dir / project_stamp_name(main_index)))
+    tab_source = trim_alpha(load_rgba(hero_dir / project_stamp_name(tab_index)))
 
     outdir.mkdir(parents=True, exist_ok=True)
     staging: Path | None = None
@@ -131,8 +144,8 @@ def package_static(
     try:
         with exclusive_lock(outdir / ".line-stamp-package.lock", "package-static transaction"):
             staging = Path(tempfile.mkdtemp(prefix=".line-stamp-package-", dir=outdir))
-            for source in expected:
-                shutil.copy2(source, staging / source.name)
+            for source, submitted_name in stamp_pairs:
+                shutil.copy2(source, staging / submitted_name)
 
             save_png(sanitize_alpha(fit_canvas(main_source, 240, 240, 10)), staging / "main.png")
             upper = trim_alpha(
@@ -141,12 +154,12 @@ def package_static(
             save_png(sanitize_alpha(fit_canvas(upper, 96, 74, 4)), staging / "tab.png")
 
             staged_zip = staging / zip_name
-            member_names = ["main.png", "tab.png", *(path.name for path in expected)]
+            member_names = ["main.png", "tab.png", *submitted_stamp_names]
             with zipfile.ZipFile(staged_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
                 for name in member_names:
                     archive.write(staging / name, name)
 
-            install_names = [*(path.name for path in expected), "main.png", "tab.png", zip_name]
+            install_names = [*submitted_stamp_names, "main.png", "tab.png", zip_name]
             # Staging and backups live under outdir, so every replace stays on one
             # filesystem. The ZIP is installed last; failures restore the complete
             # prior managed set, while unrelated files and directories are untouched.
@@ -164,6 +177,17 @@ def package_static(
 
     zip_path = outdir / zip_name
     print(f"wrote {zip_path} {zip_path.stat().st_size}B members={count + 2}")
+    legacy_names = [
+        project_stamp_name(index)
+        for index in range(1, max(ALLOWED_COUNTS) + 1)
+        if (outdir / project_stamp_name(index)).is_file()
+        or (outdir / project_stamp_name(index)).is_symlink()
+    ]
+    if legacy_names:
+        print(
+            "WARN preserved legacy submit files excluded from ZIP: "
+            + ", ".join(legacy_names)
+        )
     return zip_path
 
 

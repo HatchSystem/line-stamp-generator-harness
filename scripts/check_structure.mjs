@@ -1401,6 +1401,16 @@ function validateWorkflowContracts() {
     "P4〜P6 の成果物コマンドは素材受領・文字モード・AI文字検査を共有 SESSION 契約で検証してください",
   );
   check(
+    /def\s+project_stamp_name\s*\(/.test(sessionText) &&
+      /return\s+f["']stamp\{index:02d\}\.png["']/.test(sessionText) &&
+      /def\s+submission_stamp_name\s*\(/.test(sessionText) &&
+      /return\s+f["']\{index:02d\}\.png["']/.test(sessionText),
+    "STAMP_NAME_BOUNDARY",
+    SESSION_CONTRACT_IMPLEMENTATION,
+    0,
+    "内部名 stampNN.png と Creators Market 提出名 NN.png を共有関数で分離してください",
+  );
+  check(
     /report\.get\(["']gate["']\)\s*!=\s*["']P5["']/.test(sessionText) &&
       /report\.get\(["']scope["']\)\s*!=\s*["']all["']/.test(sessionText) &&
       /manifest_sha256/.test(sessionText) &&
@@ -1574,17 +1584,40 @@ function validateWorkflowContracts() {
   );
   check(
     /def\s+validate_stamp_sources\s*\(/.test(validatorText) &&
+      /source_name\s*=\s*project_stamp_name\(index\)/.test(validatorText) &&
+      /submitted_name\s*=\s*submission_stamp_name\(index\)/.test(validatorText) &&
       /submitted_bytes\s*!=\s*source_bytes/.test(validatorText) &&
-      /validate_stamp_sources\(root\.parent,\s*root,\s*expected_names,\s*errors\)/.test(validatorText) &&
-      /validate_stamp_sources\(project_dir,\s*submit_dir,\s*expected,\s*errors\)/.test(publishText),
+      /validate_stamp_sources\(root\.parent,\s*root,\s*args\.count,\s*errors\)/.test(validatorText) &&
+      /validate_stamp_sources\(project_dir,\s*submit_dir,\s*count,\s*errors\)/.test(publishText),
     "PACK_REVIEWED_SOURCE_BINDING",
     PACK_VALIDATOR_IMPLEMENTATION,
     0,
-    "validate-pack と P7 は submit/stampNN.png をレビュー済み stamps/stampNN.png と byte 比較してください",
+    "validate-pack と P7 は submit/NN.png をレビュー済み stamps/stampNN.png と byte 比較してください",
   );
 
   const packagerText = readText(PACKAGER_IMPLEMENTATION);
   const transactionText = readText(TRANSACTION_IMPLEMENTATION);
+  check(
+    /stamp_pairs\s*=\s*\[/.test(packagerText) &&
+      /project_stamp_name\(index\)/.test(packagerText) &&
+      /submission_stamp_name\(index\)/.test(packagerText) &&
+      /shutil\.copy2\(source,\s*staging\s*\/\s*submitted_name\)/.test(packagerText) &&
+      /member_names\s*=\s*\[["']main\.png["'],\s*["']tab\.png["'],\s*\*submitted_stamp_names\]/.test(packagerText),
+    "PACKAGE_SUBMISSION_NAMES",
+    PACKAGER_IMPLEMENTATION,
+    0,
+    "package-static は内部 stampNN.png を提出 NN.png へ写し、ZIP member に提出名だけを使ってください",
+  );
+  check(
+    /def\s+validate_submission_names\s*\(/.test(validatorText) &&
+      /legacy submit files are preserved but excluded from ZIP/.test(validatorText) &&
+      /validate_submission_names\(root,\s*args\.count,\s*errors,\s*warnings\)/.test(validatorText) &&
+      /validate_submission_names\(submit_dir,\s*count,\s*errors,\s*warnings\)/.test(publishText),
+    "PACKAGE_LEGACY_NAMES",
+    PACK_VALIDATOR_IMPLEMENTATION,
+    0,
+    "旧 submit/stampNN.png は削除せず警告し、P6/P7 のZIP契約から除外してください",
+  );
   check(
     /tempfile\.mkdtemp\([^\n]*dir\s*=\s*outdir\)/.test(packagerText) &&
       /zip_name\.split\(["']\.["']\s*,\s*1\)\[0\]/.test(packagerText) &&

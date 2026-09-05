@@ -14,8 +14,16 @@ from pathlib import Path
 
 from metadata_utils import DuplicateKeyError, loads_no_duplicates
 from project_context import enforce_facade_project
-from session_contract import require_complete_text_evidence, require_review_evidence
-from validate_pack import validate_png, validate_stamp_sources, validate_zip
+from session_contract import (
+    require_complete_text_evidence,
+    require_review_evidence,
+)
+from validate_pack import (
+    validate_png,
+    validate_submission_names,
+    validate_stamp_sources,
+    validate_zip,
+)
 
 ALLOWED_COUNTS = {8, 16, 24, 32, 40}
 TITLE_RANGE = (2, 40)
@@ -681,7 +689,7 @@ def main() -> None:
         errors.append(f"missing ZIP {zip_path}")
     elif type(count) is int and count in ALLOWED_COUNTS:
         submit_dir = project_dir / "submit"
-        expected = [f"stamp{i:02d}.png" for i in range(1, count + 1)]
+        expected = validate_submission_names(submit_dir, count, errors, warnings)
         validate_png(submit_dir / "main.png", (240, 240), None, None, 0, errors, warnings)
         validate_png(submit_dir / "tab.png", (96, 74), None, None, 0, errors, warnings)
         for name in expected:
@@ -694,7 +702,7 @@ def main() -> None:
                 errors,
                 warnings,
             )
-        validate_stamp_sources(project_dir, submit_dir, expected, errors)
+        validate_stamp_sources(project_dir, submit_dir, count, errors)
         validate_zip(zip_path, submit_dir, ["main.png", "tab.png", *expected], errors)
 
     print(f"errors={len(errors)} warnings={len(warnings)}")

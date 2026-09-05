@@ -74,7 +74,7 @@
 - `adult`、`consent`、`rights` は質問・保存・ゲート判定を行わない。`license_proof` は必須にせず、LINE 側から追加資料を求められた場合の任意記録としてだけ扱う
 - `font` と `ai` を1パック内で混ぜない。`ai` は OCR、エージェントの目視読み上げ、ユーザー確認の3段階を通し、OCR だけで合格にしない
 - 確認一覧は `review-vNN.png` と版を上げ、上書きしない
-- 提出 ZIP は `main.png` `tab.png` `stampNN.png` だけにする。写真、原作画像、三面図、SESSION、レビュー、メタを入れない
+- プロジェクト内部は `stampNN.png`、提出境界は `NN.png` とする。提出 ZIP は `main.png` `tab.png` `01.png`〜`NN.png` だけにし、写真、原作画像、三面図、SESSION、レビュー、メタを入れない
 - 被写体の実名をタイトル、説明、ファイル名に使わない
 
 ## 禁止する操作

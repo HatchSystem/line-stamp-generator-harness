@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import stat
 import zipfile
 from pathlib import Path
@@ -10,7 +11,12 @@ from PIL import Image
 
 from image_utils import hidden_rgb_pixels, internal_hole_sizes
 from project_context import enforce_facade_project
-from session_contract import load_static_session, session_count
+from session_contract import (
+    load_static_session,
+    project_stamp_name,
+    session_count,
+    submission_stamp_name,
+)
 
 
 STATIC_COUNTS = {8, 16, 24, 32, 40}
@@ -195,7 +201,7 @@ def validate_zip(
 def validate_stamp_sources(
     project_dir: Path,
     submit_dir: Path,
-    expected_names: list[str],
+    count: int,
     errors: list[str],
 ) -> None:
     """Bind every submitted stamp byte-for-byte to its reviewed project source."""
@@ -203,11 +209,16 @@ def validate_stamp_sources(
     if source_dir.is_symlink() or not source_dir.is_dir():
         errors.append("cannot bind submitted stamps: project stamps/ is missing or indirect")
         return
-    for name in expected_names:
-        source = source_dir / name
-        submitted = submit_dir / name
+    for index in range(1, count + 1):
+        source_name = project_stamp_name(index)
+        submitted_name = submission_stamp_name(index)
+        source = source_dir / source_name
+        submitted = submit_dir / submitted_name
         if source.is_symlink() or not source.is_file():
-            errors.append(f"cannot bind submitted {name}: reviewed source is missing or indirect")
+            errors.append(
+                f"cannot bind submitted {submitted_name}: reviewed source "
+                f"stamps/{source_name} is missing or indirect"
+            )
             continue
         if submitted.is_symlink() or not submitted.is_file():
             continue  # validate_png reports the missing submitted file.
@@ -215,10 +226,50 @@ def validate_stamp_sources(
             source_bytes = source.read_bytes()
             submitted_bytes = submitted.read_bytes()
         except OSError as exc:
-            errors.append(f"cannot compare submitted {name} with reviewed source: {exc}")
+            errors.append(
+                f"cannot compare submitted {submitted_name} with reviewed "
+                f"stamps/{source_name}: {exc}"
+            )
             continue
         if submitted_bytes != source_bytes:
-            errors.append(f"submitted {name} differs from reviewed stamps/{name}")
+            errors.append(
+                f"submitted {submitted_name} differs from reviewed stamps/{source_name}"
+            )
+
+
+def validate_submission_names(
+    root: Path,
+    count: int,
+    errors: list[str],
+    warnings: list[str],
+) -> list[str]:
+    """Validate Creators Market names and report legacy outputs without deleting them."""
+    expected_names = [submission_stamp_name(index) for index in range(1, count + 1)]
+    try:
+        entries = list(root.iterdir())
+    except OSError as exc:
+        errors.append(f"cannot list submit directory for stamp names: {exc}")
+        return expected_names
+    found_names = sorted(
+        path.name
+        for path in entries
+        if path.is_file()
+        and re.fullmatch(r"[0-9]{2}\.png", path.name, flags=re.IGNORECASE)
+    )
+    if found_names != expected_names:
+        errors.append(f"stamp names differ: expected={expected_names} found={found_names}")
+    legacy_names = sorted(
+        path.name
+        for path in entries
+        if (path.is_file() or path.is_symlink())
+        and re.fullmatch(r"stamp[0-9]{2}\.png", path.name, flags=re.IGNORECASE)
+    )
+    if legacy_names:
+        warnings.append(
+            "legacy submit files are preserved but excluded from ZIP: "
+            + ", ".join(legacy_names)
+        )
+    return expected_names
 
 
 def checked_project_paths(
@@ -314,14 +365,7 @@ def main() -> None:
     if args.max_micro_hole < 0 or args.min_margin < 0:
         errors.append("hole and margin thresholds must be nonnegative")
 
-    expected_names = [f"stamp{index:02d}.png" for index in range(1, args.count + 1)]
-    found_names = sorted(
-        path.name
-        for path in root.glob("stamp??.png")
-        if path.is_file() and path.name[5:7].isdigit()
-    )
-    if found_names != expected_names:
-        errors.append(f"stamp names differ: expected={expected_names} found={found_names}")
+    expected_names = validate_submission_names(root, args.count, errors, warnings)
 
     validate_png(root / "main.png", (240, 240), None, None, 0, errors, warnings)
     validate_png(root / "tab.png", (96, 74), None, None, 0, errors, warnings)
@@ -330,15 +374,15 @@ def main() -> None:
     for name in expected_names:
         path = root / name
         validate_png(path, None, stamp_minimum, stamp_limit, args.min_margin, errors, warnings)
-    validate_stamp_sources(root.parent, root, expected_names, errors)
+    validate_stamp_sources(root.parent, root, args.count, errors)
 
     if args.text_mode == "ai":
         warnings.append("text_mode=ai: micro-hole check skipped (text counters would be false positives); inspect the light/dark review sheet and run public command verify-text")
         expected_hole_names: list[str] = []
     else:
         expected_hole_names = expected_names
-    for name in expected_hole_names:
-        source = character_dir / name
+    for index, name in enumerate(expected_hole_names, start=1):
+        source = character_dir / project_stamp_name(index)
         if source.is_symlink() or not source.is_file():
             errors.append(f"missing character layer {source}")
             continue
@@ -351,7 +395,7 @@ def main() -> None:
             continue
         micro_holes = [size for size in internal_hole_sizes(character) if size <= args.max_micro_hole]
         if micro_holes:
-            errors.append(f"{name} character layer has micro-hole sizes {micro_holes[:8]}")
+            errors.append(f"{source.name} character layer has micro-hole sizes {micro_holes[:8]}")
 
     validate_zip(zip_path, root, ["main.png", "tab.png", *expected_names], errors)
 

@@ -95,11 +95,11 @@ python scripts/line_stamp.py validate-pack --dir projects/usagi/submit --count 1
 
 P5 承認後に SESSION を P6 へ進めてから梱包・検証する。`package-static --count` と `validate-pack --count/--text-mode` は SESSION と完全一致させる。`text_mode: ai` は全点の OCR・エージェント読上げ・ユーザー目視承認を終えた `text_check: ok` でなければ P6 処理を開始できない。`self-test` が PASS し、`validate-pack` が `errors=0` の場合だけ P6 を完了する。
 
-`package-static` は `submit/` 配下の同一 filesystem 上に一時成果物を完成させてから、管理対象の `main.png` `tab.png` `stampNN.png` と指定 ZIP だけを置換する。無関係なファイルやサブディレクトリを削除しない。旧枚数の `stampNN.png` が残っていれば `validate-pack` が余剰として止めるため、エージェントは削除せずユーザーへ報告する。
+`package-static` はレビュー済み内部正本 `stamps/stampNN.png` を提出用の `submit/NN.png` へ番号対応でコピーする。`submit/` 配下の同一 filesystem 上に一時成果物を完成させてから、管理対象の `main.png` `tab.png` `NN.png` と指定 ZIP だけを置換する。ZIP member は `main.png`、`tab.png`、`01.png`〜`NN.png` だけにする。無関係なファイルやサブディレクトリを削除しない。旧枚数の数値名PNGが残っていれば `validate-pack` が余剰として止める。旧形式の `submit/stampNN.png` は削除せず警告し、ZIPから除外する。
 
 `text_mode: ai` では `--text-mode ai` を付ける。文字のカウンターを穴と誤判定しないよう穴検査をスキップし、代わりに濃色背景の確認一覧を目視する。
 
-`validate-pack` は文字の自然なカウンターを切り抜き漏れと誤判定しないよう、キャラクター単独レイヤーへ微小穴検査を行う。提出 PNG の寸法、偶数幅/高さ、RGB/RGBA、72dpi 以上、透過、容量を確認し、ZIP 内の各バイトが検証した提出ファイルと一致することも検査する。
+`validate-pack` は文字の自然なカウンターを切り抜き漏れと誤判定しないよう、内部名 `character-layers/stampNN.png` のキャラクター単独レイヤーへ微小穴検査を行う。提出名 `submit/NN.png` の寸法、偶数幅/高さ、RGB/RGBA、72dpi 以上、透過、容量を確認し、対応するレビュー済み `stamps/stampNN.png` およびZIP内の同名memberとバイト一致することも検査する。
 
 ## 公開前チェック
 

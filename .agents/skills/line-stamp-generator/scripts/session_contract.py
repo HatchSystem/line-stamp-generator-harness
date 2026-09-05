@@ -17,6 +17,20 @@ TEXT_REPORT_RE = re.compile(r"text-check-v([0-9]+)\.json")
 REVIEW_EVIDENCE_RE = re.compile(r"review-v([0-9]{2,})\.json")
 
 
+def project_stamp_name(index: int) -> str:
+    """Return the canonical filename used by project-internal stamp artifacts."""
+    if type(index) is not int or not 1 <= index <= max(STATIC_COUNTS):
+        raise ValueError(f"stamp index must be an integer from 1 to {max(STATIC_COUNTS)}")
+    return f"stamp{index:02d}.png"
+
+
+def submission_stamp_name(index: int) -> str:
+    """Return the filename recognized by Creators Market ZIP uploads."""
+    if type(index) is not int or not 1 <= index <= max(STATIC_COUNTS):
+        raise ValueError(f"stamp index must be an integer from 1 to {max(STATIC_COUNTS)}")
+    return f"{index:02d}.png"
+
+
 def read_regular_bytes(path: Path) -> bytes:
     """Read one stable regular file while rejecting path swaps and in-place changes."""
     if path.is_symlink() or not path.is_file():
@@ -99,7 +113,7 @@ def require_complete_text_evidence(project_dir: Path, count: int) -> None:
     if set(by_id) != expected_ids:
         raise ValueError("P5 text evidence ids are not exactly 1..SESSION count")
     for row_id in sorted(expected_ids):
-        name = f"stamp{row_id:02d}.png"
+        name = project_stamp_name(row_id)
         row = by_id[row_id]
         status = row.get("status")
         if not isinstance(status, str) or status not in {
@@ -161,7 +175,7 @@ def require_review_evidence(project_dir: Path, count: int, version: int) -> None
     if set(by_id) != expected_ids:
         raise ValueError("review evidence ids are not exactly 1..SESSION count")
     for row_id in sorted(expected_ids):
-        name = f"stamp{row_id:02d}.png"
+        name = project_stamp_name(row_id)
         row = by_id[row_id]
         if row.get("file") != name or row.get("sha256") != sha256_file(
             project_dir / "stamps" / name

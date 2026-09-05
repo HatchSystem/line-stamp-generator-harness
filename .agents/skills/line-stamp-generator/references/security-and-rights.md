@@ -19,5 +19,5 @@
 
 - `.env`、個人用設定、`projects/` の制作物は Git に含めない。コミット前に `git status` で確認する
 - `projects/` と `submit/` を再帰削除しない。`rm -rf`、`git reset --hard`、`git clean -f`、force push を使わない
-- 提出 ZIP は `main.png`、`tab.png`、規定数の `stampNN.png` だけにする。写真、原作画像、三面図、確認一覧、SESSION、メタ文書を含めない
+- 提出 ZIP は `main.png`、`tab.png`、規定数の `01.png`〜`NN.png` だけにする。内部正本 `stampNN.png`、写真、原作画像、三面図、確認一覧、SESSION、メタ文書を含めない
 - 不要ファイルは削除せず、対象を確認してリポジトリ内の `tmp/` へ移動し、ユーザーへ報告する

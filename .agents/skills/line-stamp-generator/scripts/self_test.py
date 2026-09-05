@@ -66,11 +66,18 @@ from project import (
 from project_context import FACADE_PROJECT_ENV, enforce_facade_project
 from session_contract import (
     load_static_session,
+    project_stamp_name,
     require_complete_text_evidence,
     require_review_evidence,
     sha256_file,
+    submission_stamp_name,
 )
-from validate_pack import validate_png, validate_stamp_sources, validate_zip
+from validate_pack import (
+    validate_png,
+    validate_submission_names,
+    validate_stamp_sources,
+    validate_zip,
+)
 from verify_text import next_version, verification_scope, verification_session
 import transaction_utils
 
@@ -106,6 +113,25 @@ def write_review_evidence_fixture(project: Path, count: int, version: int = 1) -
 
 
 def main() -> None:
+    assert [project_stamp_name(index) for index in (1, 8, 40)] == [
+        "stamp01.png",
+        "stamp08.png",
+        "stamp40.png",
+    ]
+    assert [submission_stamp_name(index) for index in (1, 8, 40)] == [
+        "01.png",
+        "08.png",
+        "40.png",
+    ]
+    for invalid_index in (True, 0, 41):
+        for naming_function in (project_stamp_name, submission_stamp_name):
+            try:
+                naming_function(invalid_index)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f"stamp naming accepted invalid index {invalid_index!r}")
+
     assert text_layer_output("font", "text-layers") == Path("text-layers")
     assert text_layer_output("ai", None) is None
     assert text_layer_output("none", None) is None
@@ -1170,6 +1196,54 @@ def main() -> None:
         validate_zip(corrupt_zip, root, ["valid.png"], corrupt_errors)
         assert corrupt_errors, "corrupt ZIP member was accepted"
 
+    for boundary_count in (8, 16, 24, 32, 40):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "projects" / f"pack-{boundary_count}"
+            source_dir = project / "stamps"
+            outdir = project / "submit"
+            source_dir.mkdir(parents=True)
+            outdir.mkdir()
+            (project.parent / "ACTIVE").write_text(
+                f"pack-{boundary_count}\n", encoding="utf-8"
+            )
+            (project / "SESSION.md").write_text(
+                "# SESSION\n\n"
+                "- schema_version: 3\n"
+                f"- project: pack-{boundary_count}\n"
+                "- materials: received\n"
+                f"- count: {boundary_count}\n"
+                "- text: yes\n"
+                "- text_mode: font\n"
+                "- text_check: n/a\n"
+                "- review_version: 1\n"
+                "- gate: P6\n",
+                encoding="utf-8",
+            )
+            for index in range(1, boundary_count + 1):
+                stamp = Image.new("RGBA", (100, 100), (0, 0, 0, 0))
+                ImageDraw.Draw(stamp).rectangle(
+                    (10, 10, 89, 89), fill=(20 + index, 80, 40, 255)
+                )
+                save_png(stamp, source_dir / project_stamp_name(index))
+            write_review_evidence_fixture(project, boundary_count)
+            with redirect_stdout(StringIO()):
+                zip_path = package_static(source_dir, outdir, boundary_count)
+            expected_stamp_names = [
+                submission_stamp_name(index)
+                for index in range(1, boundary_count + 1)
+            ]
+            naming_errors: list[str] = []
+            validate_submission_names(outdir, boundary_count, naming_errors, [])
+            validate_stamp_sources(project, outdir, boundary_count, naming_errors)
+            validate_zip(
+                zip_path,
+                outdir,
+                ["main.png", "tab.png", *expected_stamp_names],
+                naming_errors,
+            )
+            assert not naming_errors
+
     with TemporaryDirectory() as directory:
         root = Path(directory)
         project = root / "projects" / "pack"
@@ -1206,7 +1280,9 @@ def main() -> None:
         nested_note = outdir / "user-assets" / "notes.txt"
         nested_note.parent.mkdir()
         nested_note.write_text("keep this user directory", encoding="utf-8")
-        (outdir / "stamp01.png").write_bytes(b"old managed output")
+        legacy_path = outdir / "stamp01.png"
+        legacy_path.write_bytes(b"preserve this legacy output")
+        (outdir / "01.png").write_bytes(b"old managed output")
         sink = StringIO()
         with redirect_stdout(sink):
             zip_path = package_static(source_dir, outdir, 8)
@@ -1214,22 +1290,47 @@ def main() -> None:
         assert unrelated_path.read_bytes() == b"keep this unrelated draft"
         assert other_zip.read_bytes() == b"keep this unrelated archive"
         assert nested_note.read_text(encoding="utf-8") == "keep this user directory"
+        assert legacy_path.read_bytes() == b"preserve this legacy output"
+        assert "WARN preserved legacy submit files excluded from ZIP: stamp01.png" in sink.getvalue()
         assert not list(outdir.glob(".line-stamp-package-*"))
-        expected_stamp_names = [f"stamp{index:02d}.png" for index in range(1, 9)]
+        expected_stamp_names = [submission_stamp_name(index) for index in range(1, 9)]
+        submission_name_errors: list[str] = []
+        legacy_warnings: list[str] = []
+        assert validate_submission_names(
+            outdir, 8, submission_name_errors, legacy_warnings
+        ) == expected_stamp_names
+        assert not submission_name_errors
+        assert legacy_warnings and "stamp01.png" in legacy_warnings[0]
+
+        missing_bytes = (outdir / "08.png").read_bytes()
+        (outdir / "08.png").unlink()
+        missing_name_errors: list[str] = []
+        validate_submission_names(outdir, 8, missing_name_errors, [])
+        assert any("stamp names differ" in message for message in missing_name_errors)
+        (outdir / "08.png").write_bytes(missing_bytes)
+
+        (outdir / "09.png").write_bytes(missing_bytes)
+        extra_name_errors: list[str] = []
+        validate_submission_names(outdir, 8, extra_name_errors, [])
+        assert any("stamp names differ" in message for message in extra_name_errors)
+        (outdir / "09.png").unlink()
+
         source_binding_errors: list[str] = []
-        validate_stamp_sources(project, outdir, expected_stamp_names, source_binding_errors)
+        validate_stamp_sources(project, outdir, 8, source_binding_errors)
         assert not source_binding_errors
         tampered_submission = Image.new("RGBA", (100, 100), (0, 0, 0, 0))
         ImageDraw.Draw(tampered_submission).ellipse(
             (10, 10, 89, 89), fill=(180, 30, 60, 255)
         )
-        save_png(tampered_submission, outdir / "stamp01.png")
+        save_png(tampered_submission, outdir / "01.png")
         source_binding_errors = []
-        validate_stamp_sources(project, outdir, expected_stamp_names, source_binding_errors)
+        validate_stamp_sources(project, outdir, 8, source_binding_errors)
         assert any("differs from reviewed" in message for message in source_binding_errors)
-        (outdir / "stamp01.png").write_bytes((source_dir / "stamp01.png").read_bytes())
-        for name in expected_stamp_names:
-            assert (outdir / name).read_bytes() == (source_dir / name).read_bytes()
+        (outdir / "01.png").write_bytes((source_dir / "stamp01.png").read_bytes())
+        for index, name in enumerate(expected_stamp_names, start=1):
+            assert (outdir / name).read_bytes() == (
+                source_dir / project_stamp_name(index)
+            ).read_bytes()
 
         pack_errors: list[str] = []
         pack_warnings: list[str] = []
@@ -1290,17 +1391,30 @@ def main() -> None:
         assert replace_count == fail_at
         for name, old_bytes in prior_outputs.items():
             assert (outdir / name).read_bytes() == old_bytes
+        assert legacy_path.read_bytes() == b"preserve this legacy output"
         assert not list(outdir.glob(".line-stamp-package-*"))
         assert (outdir / ".line-stamp-package.lock").is_file()
 
         tampered_zip = outdir / "tampered.zip"
         with zipfile.ZipFile(tampered_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             for name in member_names:
-                data = b"tampered" if name == "stamp01.png" else (outdir / name).read_bytes()
+                data = b"tampered" if name == "01.png" else (outdir / name).read_bytes()
                 archive.writestr(name, data)
         tampered_errors: list[str] = []
         validate_zip(tampered_zip, outdir, member_names, tampered_errors)
-        assert any("stamp01.png differs" in message for message in tampered_errors)
+        assert any("01.png differs" in message for message in tampered_errors)
+
+        for wrong_name in ("stamp01.png", "01.PNG"):
+            wrong_name_zip = outdir / f"wrong-{wrong_name.replace('.', '-')}.zip"
+            with zipfile.ZipFile(
+                wrong_name_zip, "w", compression=zipfile.ZIP_DEFLATED
+            ) as archive:
+                for name in member_names:
+                    archive_name = wrong_name if name == "01.png" else name
+                    archive.writestr(archive_name, (outdir / name).read_bytes())
+            wrong_name_errors: list[str] = []
+            validate_zip(wrong_name_zip, outdir, member_names, wrong_name_errors)
+            assert any("ZIP members differ" in message for message in wrong_name_errors)
 
         try:
             package_static(source_dir, outdir, 8, zip_name="../escape.zip")
@@ -1328,6 +1442,7 @@ def main() -> None:
         assert blocked_output.is_dir()
         for name, old_bytes in prior_outputs.items():
             assert (outdir / name).read_bytes() == old_bytes
+        assert legacy_path.read_bytes() == b"preserve this legacy output"
 
     repo_root = Path(__file__).resolve().parents[4]
     facade = repo_root / "scripts" / "line_stamp.py"
@@ -1398,7 +1513,8 @@ def main() -> None:
     assert hidden_rgb_pixels(clean) == 0
     print(
         "PASS schema-migration counted-length layer-isolation alpha-cleanup "
-        "micro-hole-policy pack-validation safe-packaging p0-transition migration-rollback "
+        "micro-hole-policy pack-validation submission-naming safe-packaging "
+        "p0-transition migration-rollback "
         "facade-contract"
     )
 

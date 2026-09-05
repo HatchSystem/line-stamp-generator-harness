@@ -23,4 +23,4 @@
 
 価格、販売エリア、LINE STORE 表示、AI/写真使用、プレミアム参加などの有限の選択は、関連する最大3問を1回の構造化選択 UI にまとめ、推奨案を先頭にして影響を示す。`python scripts/line_stamp.py check-publish-ready ...` を通し、エラー0でユーザーにメタ案を提示する。承認後に [publish.md](publish.md) の P8 へ進む。
 
-ZIPには `main.png`、`tab.png`、規定数のスタンプPNGだけを入れる。提供写真、三面図、レビュー一覧、SESSION、メタ文書は入れない。
+ZIPには `main.png`、`tab.png`、`01.png`〜`NN.png` の規定数だけをルート直下へ入れる。内部正本 `stamps/stampNN.png`、提供写真、三面図、レビュー一覧、SESSION、メタ文書は入れない。
