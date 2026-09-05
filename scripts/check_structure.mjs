@@ -30,6 +30,7 @@ const METADATA_IMPLEMENTATION = `${SKILL_SCRIPT_DIRECTORY}/metadata_utils.py`;
 const PROJECT_CONTEXT_IMPLEMENTATION = `${SKILL_SCRIPT_DIRECTORY}/project_context.py`;
 const PYTHON_SELF_TEST = `${SKILL_SCRIPT_DIRECTORY}/self_test.py`;
 const SUBMISSION_EXAMPLE = ".agents/skills/line-stamp-generator/assets/submission.example.json";
+const CI_WORKFLOW = ".github/workflows/ci.yml";
 const EXPECTED_PROJECT_ACTIONS = [
   "complete-production",
   "confirm-account",
@@ -2214,6 +2215,73 @@ function validateRootAdapter() {
 }
 
 
+function validateCiWorkflow() {
+  if (!check(fs.existsSync(absolute(CI_WORKFLOW)), "CI_WORKFLOW", CI_WORKFLOW, 0, "CI workflow がありません")) return;
+  const workflow = readText(CI_WORKFLOW);
+  const actionUses = [...workflow.matchAll(/^\s*uses:\s*([^\s#]+)/gm)].map((match) => match[1]);
+  const externalActionUses = actionUses.filter((value) => !value.startsWith("./"));
+  check(
+    /permissions:\s*\n\s+contents:\s*read/.test(workflow) &&
+      /concurrency:\s*\n\s+group:\s*ci-\$\{\{ github\.workflow \}\}-\$\{\{ github\.ref \}\}\s*\n\s+cancel-in-progress:\s*true/.test(workflow),
+    "CI_SAFETY_AND_CONCURRENCY",
+    CI_WORKFLOW,
+    0,
+    "CIはcontents read権限と同一refの古い実行を止めるconcurrencyを維持してください",
+  );
+  check(
+    externalActionUses.length >= 3 &&
+      externalActionUses.every((value) => /^[^@\s]+@[0-9a-f]{40}$/.test(value)),
+    "CI_ACTION_SHA_PINS",
+    CI_WORKFLOW,
+    0,
+    "外部Actionは40桁のcommit SHAへ固定してください",
+  );
+  check(
+    /quality:\s*\n\s+name:\s*quality \/ ubuntu-latest \/ Python 3\.10\s*\n\s+runs-on:\s*ubuntu-latest/.test(workflow) &&
+      /python-version:\s*["']3\.10["']/.test(workflow),
+    "CI_MINIMUM_PYTHON_QUALITY",
+    CI_WORKFLOW,
+    0,
+    "全品質検査はUbuntuと最低対応Python 3.10の1ジョブへ集約してください",
+  );
+  check(
+    /compatibility:\s*[\s\S]*?os:\s*\[ubuntu-latest, windows-latest, macos-latest\]/.test(workflow) &&
+      /python-version:\s*["']3\.14["']/.test(workflow) &&
+      /fail-fast:\s*false/.test(workflow),
+    "CI_LATEST_PYTHON_THREE_OS",
+    CI_WORKFLOW,
+    0,
+    "最新Python 3.14の互換性検査はUbuntu、Windows、macOSを個別に完走させてください",
+  );
+  check(
+    (workflow.match(/node --check scripts\/check_structure\.mjs/g) ?? []).length === 1 &&
+      (workflow.match(/run:\s*node scripts\/check_structure\.mjs/g) ?? []).length === 1 &&
+      (workflow.match(/node scripts\/hooks\/self_test\.mjs/g) ?? []).length === 1,
+    "CI_NODE_CHECKS_ONCE",
+    CI_WORKFLOW,
+    0,
+    "Nodeの構文・構成・hook検査は品質ジョブで各1回だけ実行してください",
+  );
+  check(
+    (workflow.match(/python scripts\/line_stamp\.py self-test/g) ?? []).length === 2 &&
+      (workflow.match(/timeout-minutes:\s*10/g) ?? []).length === 2,
+    "CI_EFFICIENT_PYTHON_MATRIX",
+    CI_WORKFLOW,
+    0,
+    "Python自己診断は品質ジョブと3 OS互換性matrixで共有し、各jobを10分で制限してください",
+  );
+  const readme = readText("README.md");
+  check(
+    /対応 OS は Ubuntu、Windows、macOS/.test(readme) &&
+      /最低・最新Python版と主要3 OSを4ジョブで分担/.test(readme),
+    "CI_SUPPORT_DOCS",
+    "README.md",
+    0,
+    "READMEに主要3 OSと効率化した4ジョブの検証範囲を明記してください",
+  );
+}
+
+
 function shouldScanDocumentation(file) {
   if (file === "tasks/todo.md" || file.startsWith("tasks/history/")) return false;
   return file.endsWith(".md") || file.endsWith(".mdc");
@@ -2246,6 +2314,7 @@ function main() {
   validateWorkflowContracts();
   validateDependencyBoundaries(files);
   validateHooks();
+  validateCiWorkflow();
 
   diagnostics.sort((left, right) =>
     left.file.localeCompare(right.file, "en") ||

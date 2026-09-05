@@ -2,6 +2,7 @@
 
 | 日付 | 要約 | 詳細 |
 |---|---|---|
+| 2026-09-05 | クロスプラットフォームfixtureは正規化済み期待値と有効入力を使い、最低Python・最新Python・OS差を重複なくCIで分担する | [workflow.md](workflow.md#2026-09-05-cross-platform-ci-fixtures) |
 | 2026-09-05 | P1/P2を版付き証跡で固定し、変更時に下流承認を無効化する | [workflow.md](workflow.md#2026-09-05-versioned-design-contract) |
 | 2026-09-05 | AI文字は自動検査の代替経路と文字領域マスクを持ち、安全余白と全点一覧を機械検査する | [pipeline.md](pipeline.md#2026-09-05-image-quality-evidence) |
 | 2026-09-05 | P8開始時のアカウント確認を永続化し、登録入力とプレビューで制作を完了する | [publish.md](publish.md#2026-09-05-production-completion-boundary) |

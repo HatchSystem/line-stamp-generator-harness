@@ -794,9 +794,9 @@ def main() -> None:
             str(project / "text-layers"),
             "font",
         )
-        assert outdir == project / "stamps"
-        assert character_dir == project / "character-layers"
-        assert text_dir == project / "text-layers"
+        assert outdir == (project / "stamps").resolve()
+        assert character_dir == (project / "character-layers").resolve()
+        assert text_dir == (project / "text-layers").resolve()
         try:
             checked_output_directories(
                 project,
@@ -1764,8 +1764,16 @@ def main() -> None:
     protected = Image.new("L", (40, 40), 0)
     ImageDraw.Draw(protected).rectangle((14, 14, 25, 25), fill=255)
     unprotected = Image.new("L", (40, 40), 0)
+    ImageDraw.Draw(unprotected).rectangle((8, 8, 9, 9), fill=255)
     assert not internal_hole_sizes_outside_mask(text_like_ring, protected)
     assert internal_hole_sizes_outside_mask(text_like_ring, unprotected)
+    empty_mask = Image.new("L", (40, 40), 0)
+    try:
+        internal_hole_sizes_outside_mask(text_like_ring, empty_mask)
+    except ValueError as exc:
+        assert "non-empty text-only region" in str(exc)
+    else:
+        raise AssertionError("micro-hole inspection accepted an empty text mask")
 
     antialiased = Image.new("RGBA", (3, 3), (0, 0, 0, 0))
     antialiased.putpixel((1, 1), (20, 80, 40, 128))

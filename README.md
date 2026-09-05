@@ -54,6 +54,7 @@ hook の有効化や信頼確認は各ツール側の仕様に従います。hoo
 
 - Python 3.10 以上と `requirements.txt` の依存関係（画像処理・プロジェクト CLI）
 - Node.js 24 以上（構成検査と共通 hook）
+- 対応 OS は Ubuntu、Windows、macOS。CI は最低 Python 3.10 を Ubuntu で、最新 Python 3.14 を3 OSで検証
 - `text_mode: ai` はTesseract、日本語データ、`pytesseract`を推奨。利用不能時は独立した画像認識モデルの版付き証跡が必要
 - P1〜P5 には画像を参照・生成または編集できるエージェント機能、P8 にはログイン済みページを扱えるブラウザ機能
 
@@ -74,7 +75,7 @@ python scripts/line_stamp.py self-test
 
 期待結果は各検査の `PASS` です。Python がまだ導入されていない環境でも、Node による構成・hook 検査は独立して実行できます。
 
-同じ検査は GitHub Actions でも Ubuntu / Windows、Python 3.10 / 3.14 の組み合わせで実行します。外部 Action は検証済みコミット SHA に固定します。
+GitHub Actions は、Ubuntu + Python 3.10 で全品質検査を1回実行し、Ubuntu / Windows / macOS + Python 3.14 で公開Python CLIのOS互換性を検査します。最低・最新Python版と主要3 OSを4ジョブで分担し、Node検査の重複と過剰な直積を避けます。同じrefの古い実行は自動キャンセルし、外部 Action は検証済みコミット SHA に固定します。
 
 依存関係のインストールはエージェントへ自動許可していません。内容を確認したユーザーが上のコマンドを実行してください。秘密情報は `.env` や個人設定に置き、リポジトリへコミットせず、エージェントにも読み取らせません。
 
