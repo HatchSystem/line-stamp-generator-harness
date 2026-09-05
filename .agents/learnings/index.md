@@ -2,7 +2,7 @@
 
 | 日付 | 要約 | 詳細 |
 |---|---|---|
-| 2026-09-06 | 質問は処理を区切って保存した後だけ行い、回答まで次の作業を始めない | [workflow.md](workflow.md#2026-09-06-question-timing-boundary) |
+| 2026-09-06 | 【最新指示】質問UIは使用せず、処理を区切って保存した後に通常チャットで質問し、回答を待つ | [workflow.md](workflow.md#2026-09-06-question-timing-boundary) |
 | 2026-09-06 | AI文字は生成AIの目視記録へ簡素化し、旧証跡の読み取り互換と画像品質検証を維持する | [pipeline.md](pipeline.md#2026-09-06-ai-visual-text-review) |
 | 2026-09-06 | 【同日追加指示あり】対話変更は共通手順・製品アダプタ・構成検査を同時に揃える | [workflow.md](workflow.md#2026-09-06-chat-dialogue-contract) |
 | 2026-09-05 | クロスプラットフォームfixtureは正規化済み期待値と有効入力を使い、最低Python・最新Python・OS差を重複なくCIで分担する | [workflow.md](workflow.md#2026-09-05-cross-platform-ci-fixtures) |

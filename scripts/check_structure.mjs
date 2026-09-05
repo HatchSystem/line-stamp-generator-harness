@@ -2168,14 +2168,16 @@ function validateRootAdapter() {
     const adapterText = readText(adapter);
     check(
       /通常のチャット/.test(adapterText) &&
-        /AskUserQuestion[^。\n]*作業の区切り後にのみ使用/.test(adapterText) &&
+        /AskUserQuestion[^。\n]*使用しない/.test(adapterText) &&
+        /別の同期・非同期の質問 UI ツールにも置き換えない/.test(adapterText) &&
         /回答を受けるまで次の作業を始めない/.test(adapterText) &&
-        /環境・モードで利用できない/.test(adapterText) &&
+        /作業の区切り/.test(adapterText) &&
+        /最終応答で質問してターンを終了/.test(adapterText) &&
         !/フォールバック|最大3問/.test(adapterText),
-      "CLAUDE_QUESTION_BOUNDARY",
+      "CLAUDE_CHAT_ONLY_BOUNDARY",
       adapter,
       0,
-      "質問ツールは作業の区切り後だけ使用し、回答待ちと利用不可時の通常チャットを明記してください",
+      "質問ツールと代替UIを使用せず、作業の区切り後に通常チャットで質問し、回答を待つことを明記してください",
     );
   }
   for (const shared of [
@@ -2199,6 +2201,8 @@ function validateRootAdapter() {
     const guidance = readText(shared);
     check(
       /質問・承認は必ず作業の区切り後/.test(guidance) &&
+        /質問 UI ツールは使用しない/.test(guidance) &&
+        /通常のチャットの最終応答/.test(guidance) &&
         /完了または安全に停止/.test(guidance) &&
         /途中結果を保存/.test(guidance) &&
         /回答を受けるまで次の作業を始めない/.test(guidance) &&
