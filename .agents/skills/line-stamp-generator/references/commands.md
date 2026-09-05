@@ -65,23 +65,24 @@ python scripts/line_stamp.py compose-static --manifest projects/usagi/manifest.j
 
 ## 文字検査（`text_mode: ai` のみ）
 
-生成AIは誤字・脱字・鏡文字を出す。合成後にTesseractを優先して照合し、報告と文字領域マスクを版付きで残す。Tesseractが使えない場合だけ、別の画像認識モデルによる独立証跡をフォールバックとして利用できる。
+生成AIが合成後の各画像を実際に開いて文字を読み、誤字・脱字・鏡文字・字形崩れ・判読困難を確認する。CLIはこの目視結果を記録・検証し、画像認識そのものは行わない。
+
+[visual-text-review.example.json](../assets/visual-text-review.example.json) を参考に、`review/visual-reading-vNN.json` を作る。`method: ai-visual`、現在のmanifestハッシュ、各画像の番号・ファイル名・ハッシュ・承認セリフ・読み取り・判定を記録する。モデル名や独立した検査サービスは必須にしない。`recognized` は実際に読めた内容とし、期待文字から補完しない。
 
 ```powershell
-# P4: stamp01 の標本だけ
-python scripts/line_stamp.py verify-text --manifest projects/usagi/manifest.json --dir projects/usagi/stamps --review-dir projects/usagi/review --only 1
-# P5: SESSION count の全点（--only は付けない）
-python scripts/line_stamp.py verify-text --manifest projects/usagi/manifest.json --dir projects/usagi/stamps --review-dir projects/usagi/review
-# Tesseract利用不能時だけ。JSON形式は assets/vision-text-evidence.example.json を参照
-python scripts/line_stamp.py verify-text --manifest projects/usagi/manifest.json --dir projects/usagi/stamps --review-dir projects/usagi/review --vision-evidence projects/usagi/review/vision-text-evidence.json
+# P4: stamp01の記録を渡す
+python scripts/line_stamp.py verify-text --manifest projects/usagi/manifest.json --dir projects/usagi/stamps --review-dir projects/usagi/review --only 1 --visual-review projects/usagi/review/visual-reading-v01.json
+# P5: SESSION countの全点を読み取った記録を渡す（--onlyなし）
+python scripts/line_stamp.py verify-text --manifest projects/usagi/manifest.json --dir projects/usagi/stamps --review-dir projects/usagi/review --visual-review projects/usagi/review/visual-reading-v02.json
 ```
 
-- exit 0: 全点が `match`。exit 1: `near` / `mismatch` / 入力不備があり、確認または修正が必要。exit 2: Tesseractも独立画像認識証跡もなく、自動検査を満たせないためP6をブロック
-- `near` は OCR ノイズの可能性が残るため成功扱いにしない。エージェントが画像を読んで判断材料をユーザーへ出す
-- P4 は `gate: P4` と `--only 1`、P5 の最終証跡は `gate: P5`、`manifest.items` の ID が `1..SESSION count` と完全一致し、`--only` なしであることを必須にする。部分再検査だけを全点合格にはしない
-- `--only` が空、または指定 id が manifest にない場合は検査を開始せず exit 1 にする。空の `manifest.items` や AI スタンプの空テキストも成功扱いにしない
-- 自動検査だけで合否や再生成を決めない。エージェントが各画像の文字を読み上げ、ユーザーが「全点正しい / 誤字あり（番号）」で承認して初めて SESSION `text_check: ok` と最新の `text_mask_version` を記録する
-- 独立画像認識証跡は provider、model、生成日時、manifestハッシュと各画像ハッシュ・期待文字・認識文字を持つ。生成と確認を同じメインエージェントの主観だけで済ませた記録は自動検査として扱わない
+- 判定は `match`（一致）、`mismatch`（誤字・字形崩れ等）、`unreadable`（判読困難）、`not-run`（未確認）。exit 0は全点一致、exit 1は不一致・未確認・判読困難・入力不備。`match` と記載しても読み取り文字が違えば不一致とする。空白・改行とUnicode正規化以外の文字差は無視しない
+- P4は `gate: P4` と `--only 1`、P5は `gate: P5` とID `1..SESSION count` の全点を必須とする。欠番・重複・部分再検査を全点合格にしない
+- レポートは `review/text-check-vNN.md` と `.json`（schema 3）、文字領域マスクは `text-masks/vNN/` に保存する。既存版を上書きしない
+- 全点一致の結果を添えたP5一覧をユーザーが通常チャットで承認した後、SESSION `text_check: ok` と最新の `text_mask_version` を記録する。文字だけの追加ユーザー検査は不要
+- 画像やmanifest変更時は目視確認をやり直す。P5の最終記録は全点を揃え、変更していない画像の記録は同一ハッシュの場合だけ引き継げる
+- 既存の承認済みschema 2レポートと文字マスクは読み取り互換で維持する。旧OCR結果をAI目視済みへ自動変換しない。再確認時はP5（01候補はP4）へ戻し `text_check: not-run` として新しい目視記録を作り、成果物を再承認する。SESSION schemaの移行は不要
+- 旧 `--vision-evidence`、`--lang`、`--scale`、`--min-similarity` は廃止。新しい記録には `--visual-review` を使う
 
 ## 確認一覧
 
@@ -99,7 +100,7 @@ python scripts/line_stamp.py package-static --stamps projects/usagi/stamps --cha
 python scripts/line_stamp.py validate-pack --dir projects/usagi/submit --count 16 --character-dir projects/usagi/character-layers --zip projects/usagi/submit/line-stamp-submit.zip
 ```
 
-P5 承認後に SESSION を P6 へ進めてから梱包・検証する。`package-static --count` と `validate-pack --count/--text-mode` は SESSION と完全一致させる。`text_mode: ai` は全点の OCR・エージェント読上げ・ユーザー目視承認を終えた `text_check: ok` でなければ P6 処理を開始できない。`self-test` が PASS し、`validate-pack` が `errors=0` の場合だけ P6 を完了する。
+P5 承認後に SESSION を P6 へ進めてから梱包・検証する。`package-static --count` と `validate-pack --count/--text-mode` は SESSION と完全一致させる。`text_mode: ai` は全点のAI目視一致とP5一覧承認を終えた `text_check: ok` でなければ P6 処理を開始できない。`self-test` が PASS し、`validate-pack` が `errors=0` の場合だけ P6 を完了する。
 
 `package-static` はレビュー済み内部正本 `stamps/stampNN.png` を提出用の `submit/NN.png` へ番号対応でコピーする。`submit/` 配下の同一 filesystem 上に一時成果物を完成させてから、管理対象の `main.png` `tab.png` `NN.png` と指定 ZIP だけを置換する。ZIP member は `main.png`、`tab.png`、`01.png`〜`NN.png` だけにする。無関係なファイルやサブディレクトリを削除しない。旧枚数の数値名PNGが残っていれば `validate-pack` が余剰として止める。旧形式の `submit/stampNN.png` は削除せず警告し、ZIPから除外する。
 

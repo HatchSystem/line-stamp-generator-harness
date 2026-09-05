@@ -1,8 +1,6 @@
 {
   "schema_version": 1,
-  "provider": "independent-vision-provider",
-  "model": "model-and-version",
-  "generated_at": "2026-01-01T00:00:00+09:00",
+  "method": "ai-visual",
   "manifest_sha256": "replace-with-current-manifest-sha256",
   "items": [
     {
@@ -10,7 +8,8 @@
       "file": "stamp01.png",
       "sha256": "replace-with-current-stamp-sha256",
       "expected": "おはよう",
-      "recognized": "おはよう"
+      "recognized": "",
+      "status": "not-run"
     }
   ]
 }

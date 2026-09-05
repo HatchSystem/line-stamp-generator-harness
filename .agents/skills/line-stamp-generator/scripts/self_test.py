@@ -78,6 +78,7 @@ from session_contract import (
     require_review_evidence,
     sha256_file,
     submission_stamp_name,
+    visual_text_matches,
 )
 from validate_pack import (
     validate_png,
@@ -86,13 +87,182 @@ from validate_pack import (
     validate_zip,
 )
 from text_evidence import (
-    load_vision_evidence,
+    load_visual_review,
     next_version,
     text_region,
     verification_scope,
     verification_session,
 )
 import transaction_utils
+import text_evidence
+import make_contact_sheet
+
+
+def check_visual_review_flow() -> None:
+    """Exercise observation recording and rejection without any recognition service."""
+    assert visual_text_matches("ありがとう", "ありがと\nう")
+    assert visual_text_matches("が", "か\u3099")
+    assert not visual_text_matches("ありがとう", "ありがどう")
+    assert not visual_text_matches("おはよう！", "おはよう!")
+    assert not visual_text_matches("おはよう", "")
+    assert text_evidence.markdown_cell("A|B\n<script>") == "A&#124;B<br>&lt;script&gt;"
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        project = root / "projects" / "visual-demo"
+        for name in ("stamps", "review", "meta"):
+            (project / name).mkdir(parents=True)
+        (root / "projects" / "ACTIVE").write_text("visual-demo\n", encoding="utf-8")
+        session_path = project / "SESSION.md"
+        session_path.write_text(
+            "- schema_version: 4\n- project: visual-demo\n- materials: received\n"
+            "- count: 8\n- text: yes\n- text_mode: ai\n- text_check: not-run\n"
+            "- text_mask_version: 0\n- review_version: 0\n- gate: P4\n",
+            encoding="utf-8",
+        )
+        write_design_evidence_fixture(project)
+        p4_session = session_path.read_text(encoding="utf-8")
+        manifest_path = project / "manifest.json"
+        manifest = {"items": []}
+        for index in range(1, 9):
+            stamp = Image.new("RGBA", (160, 120), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(stamp)
+            draw.text((20, 20), f"Hello {index}!", fill="black")
+            draw.ellipse((48, 45, 100, 97), fill=(80, 160, 200, 255))
+            stamp.save(project / "stamps" / f"stamp{index:02d}.png", dpi=(72, 72))
+            manifest["items"].append({
+                "id": index, "text": f"Hello {index}!", "text_region": [18, 18, 100, 35],
+            })
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        observations = {
+            "schema_version": 1, "method": "ai-visual",
+            "manifest_sha256": sha256_file(manifest_path),
+            "items": [{
+                "id": index, "file": f"stamp{index:02d}.png",
+                "sha256": sha256_file(project / "stamps" / f"stamp{index:02d}.png"),
+                "expected": f"Hello {index}!", "recognized": f"Hello {index}!", "status": "match",
+            } for index in range(1, 9)],
+        }
+        input_path = project / "review" / "visual-reading.json"
+
+        def record(payload: dict, *, sample: bool = False) -> int:
+            input_path.write_text(json.dumps(payload), encoding="utf-8")
+            previous = sys.argv
+            sys.argv = ["verify-text", "--manifest", str(manifest_path), "--dir",
+                        str(project / "stamps"), "--review-dir", str(project / "review"),
+                        "--visual-review", str(input_path)] + (["--only", "1"] if sample else [])
+            try:
+                with redirect_stdout(StringIO()):
+                    return text_evidence.run()
+            finally:
+                sys.argv = previous
+
+        def require_rejection(version: int) -> None:
+            try:
+                require_complete_text_evidence(project, 8, version)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("incomplete or changed visual review passed P6")
+
+        assert record(dict(observations, items=observations["items"][:1]), sample=True) == 0
+        sample_report = project / "review" / "text-check-v01.json"
+        sample_bytes = sample_report.read_bytes()
+        assert json.loads(sample_bytes)["scope"] == "sample"
+        require_rejection(1)
+        p5_session = p4_session.replace("- gate: P4", "- gate: P5")
+        session_path.write_text(p5_session, encoding="utf-8")
+        assert record(observations) == 0
+        require_complete_text_evidence(project, 8, 2)
+        assert sample_report.read_bytes() == sample_bytes
+        report_path = project / "review" / "text-check-v02.json"
+        valid_report = report_path.read_bytes()
+        report = json.loads(valid_report)
+        assert report["schema_version"] == 3 and report["method"] == "ai-visual"
+        assert not any(key.startswith("automatic_") for key in report)
+        assert "AI reading" in report_path.with_suffix(".md").read_text(encoding="utf-8")
+
+        # P5 approval and the actual contact sheet still bind every current image.
+        previous = sys.argv
+        sys.argv = ["make-contact-sheet", "--input", str(project / "stamps"),
+                    "--output", str(project / "review" / "review-v01.png")]
+        try:
+            with redirect_stdout(StringIO()):
+                make_contact_sheet.main()
+        finally:
+            sys.argv = previous
+        approved = p5_session.replace("- gate: P5", "- gate: P6").replace(
+            "- text_check: not-run", "- text_check: ok"
+        ).replace("- text_mask_version: 0", "- text_mask_version: 2").replace(
+            "- review_version: 0", "- review_version: 1"
+        )
+        session_path.write_text(approved, encoding="utf-8")
+        assert load_static_session(project, {"P6"})["text_check"] == "ok"
+        session_path.write_text(p5_session, encoding="utf-8")
+
+        # Report edits cannot turn a different reading or expected phrase into a match.
+        for field, value in (("recognized", "Hello 1?"), ("expected", "Hello 9!"),
+                             ("status", "unreadable"), ("status", "not-run")):
+            changed = json.loads(valid_report)
+            changed["rows"][0][field] = value
+            report_path.write_text(json.dumps(changed), encoding="utf-8")
+            require_rejection(2)
+        report_path.write_bytes(valid_report)
+        original_manifest = manifest_path.read_bytes()
+        manifest_path.write_bytes(original_manifest + b" ")
+        require_rejection(2)
+        assert record(observations) == 1
+        manifest_path.write_bytes(original_manifest)
+        mask_path = project / report["rows"][0]["mask_file"]
+        mask_bytes = mask_path.read_bytes()
+        mask_path.write_bytes(b"changed mask")
+        require_rejection(2)
+        mask_path.write_bytes(mask_bytes)
+
+        # Missing observations never create a new report or silently use an older one.
+        before = next_version(project / "review")
+        assert record(dict(observations, items=observations["items"][:1])) == 1
+        assert record(dict(observations, items=observations["items"] + observations["items"][:1])) == 1
+        assert record(dict(observations, method="ocr")) == 1
+        assert next_version(project / "review") == before
+        for status in ("not-run", "unreadable", "mismatch"):
+            changed = json.loads(json.dumps(observations))
+            changed["items"][0]["status"] = status
+            version = next_version(project / "review")
+            assert record(changed) == 1
+            require_rejection(version)
+        changed = json.loads(json.dumps(observations))
+        changed["items"][0]["recognized"] = "Hello 1?"
+        version = next_version(project / "review")
+        assert record(changed) == 1  # A claimed match cannot hide changed punctuation.
+        require_rejection(version)
+
+        # A new image requires a fresh observation; previous versions remain immutable.
+        stamp_path = project / "stamps" / "stamp01.png"
+        with Image.open(stamp_path) as opened:
+            changed_stamp = opened.convert("RGBA")
+        changed_stamp.putpixel((60, 60), (255, 0, 0, 255))
+        changed_stamp.save(stamp_path, dpi=(72, 72))
+        assert record(observations) == 1
+        observations["items"][0]["sha256"] = sha256_file(stamp_path)
+        version = next_version(project / "review")
+        assert record(observations) == 0
+        require_complete_text_evidence(project, 8, version)
+        assert report_path.read_bytes() == valid_report
+
+        # Record-path and approval boundaries remain intact.
+        foreign = root / "foreign.json"
+        foreign.write_text(json.dumps(observations), encoding="utf-8")
+        try:
+            load_visual_review(str(foreign), project, sha256_file(manifest_path), set(range(1, 9)))
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("visual observations escaped the project")
+        for mode in ("font", "none"):
+            session_path.write_text(p5_session.replace("- text_mode: ai", f"- text_mode: {mode}").replace(
+                "- text_check: not-run", "- text_check: n/a"
+            ).replace("- text: yes", "- text: no" if mode == "none" else "- text: yes"), encoding="utf-8")
+            assert record(observations) == 1
 
 
 def write_review_evidence_fixture(project: Path, count: int, version: int = 1) -> None:
@@ -923,12 +1093,10 @@ def main() -> None:
         assert next_version(project / "review") == 3
         manifest_path = project / "manifest.json"
         manifest_path.write_text('{"items": "P5 evidence fixture"}\n', encoding="utf-8")
-        vision_path = project / "review" / "vision-evidence.json"
+        vision_path = project / "review" / "visual-reading.json"
         vision_fixture = {
             "schema_version": 1,
-            "provider": "fixture-provider",
-            "model": "fixture-model-v1",
-            "generated_at": "2026-09-05T12:00:00+09:00",
+            "method": "ai-visual",
             "manifest_sha256": sha256_file(manifest_path),
             "items": [
                 {
@@ -937,6 +1105,7 @@ def main() -> None:
                     "sha256": sha256_file(project / "stamps" / f"stamp{index:02d}.png"),
                     "expected": f"line {index}",
                     "recognized": f"line {index}",
+                    "status": "match",
                 }
                 for index in range(1, 9)
             ],
@@ -945,12 +1114,10 @@ def main() -> None:
             json.dumps(vision_fixture, ensure_ascii=False, allow_nan=False) + "\n",
             encoding="utf-8",
         )
-        provider, model, vision_rows, source_file, source_hash = load_vision_evidence(
+        visual_rows = load_visual_review(
             str(vision_path), project, sha256_file(manifest_path), set(range(1, 9))
         )
-        assert provider == "fixture-provider" and model == "fixture-model-v1"
-        assert len(vision_rows) == 8 and source_file == "review/vision-evidence.json"
-        assert source_hash == sha256_file(vision_path)
+        assert len(visual_rows) == 8 and visual_rows[1]["status"] == "match"
         evidence_rows = [
             {
                 "id": index,
@@ -996,6 +1163,25 @@ def main() -> None:
             "# complete P5 fixture\n", encoding="utf-8"
         )
         require_complete_text_evidence(project, 8, 3)
+        # Schema 2 vision reports remain readable, without running their old provider.
+        legacy_source = project / "review" / "legacy-vision.json"
+        legacy_source.write_text("{\"legacy\": true}\n", encoding="utf-8")
+        legacy_vision = dict(
+            evidence, automatic_method="vision",
+            vision_evidence_file="review/legacy-vision.json",
+            vision_evidence_sha256=sha256_file(legacy_source),
+        )
+        legacy_report = project / "review" / "text-check-v03.json"
+        legacy_report.write_text(json.dumps(legacy_vision), encoding="utf-8")
+        require_complete_text_evidence(project, 8, 3)
+        legacy_source.write_text("{\"legacy\": false}\n", encoding="utf-8")
+        try:
+            require_complete_text_evidence(project, 8, 3)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("legacy vision evidence accepted a changed source")
+        legacy_report.write_text(json.dumps(evidence), encoding="utf-8")
         write_review_evidence_fixture(project, 8)
         require_review_evidence(project, 8, 1)
         malformed_evidence = dict(evidence)
@@ -1794,6 +1980,8 @@ def main() -> None:
         "p0-transition migration-rollback "
         "facade-contract"
     )
+    check_visual_review_flow()
+    print("PASS ai-visual-review p4-p5-recording stale-evidence-rejection legacy-text-compatibility")
 
 
 if __name__ == "__main__":

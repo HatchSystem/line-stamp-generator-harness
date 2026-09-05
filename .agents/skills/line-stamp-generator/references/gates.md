@@ -11,7 +11,7 @@
 | P2 | 現在のP1証跡に結び付いた正面・斜め・決めポーズの版付き三面図 | ユーザー承認後、`confirm-three-view` で固定 |
 | P3 | 全点のセリフ・表情・ポーズ表 | ユーザーが計画を承認 |
 | P4 | stamp01の候補（1〜3枚）と採用案。`ai` は 01 の文字検査結果も | ユーザーがキャラ、誤字、切り抜き、文字装飾を承認 |
-| P5 | 残りと全画像を1枚に載せた版付き確認一覧。`ai` は自動文字検査と文字領域マスクも | ユーザーが一覧を承認し、`ai` は三段階検査を完了（`text_check: ok`、`text_mask_version: N`） |
+| P5 | 残りと全画像を1枚に載せた版付き確認一覧。`ai` はAIの目視確認記録と文字領域マスクも | ユーザーが一覧を承認し、`ai` は全点のAI目視確認を完了（`text_check: ok`、`text_mask_version: N`） |
 | P6 | main、tab、全スタンプ、検証ログ、ZIP | `self-test` PASS、`validate-pack` errors=0 |
 | P7 | タイトル・説明・クリエイター名・コピーライト・価格・販売エリア・申告/参加設定案 | `check-publish-ready` errors=0、ユーザーがメタを承認 |
 | P8 | 確認済みアカウントへの Creators Market 登録内容とプレビュー | アカウント名・販売者ID・登録先を記録し、入力サマリ確認後に `complete-production` を実行 |
@@ -49,7 +49,7 @@ account_name / seller_id / registration_target / account_confirmed_at
 
 - `schema_version`: 現行は `4`。旧形式は制作再開前に公開 CLI の `project --root . migrate` で診断する
 - `text_mode`: `font` `ai` `none`（`text: no` のとき）
-- `text_check`: `not-run` `ok` `failed` `n/a`（`ai` 以外は `n/a`。自動検査だけで `ok` にせず、エージェントの読み上げとユーザー承認後に更新）
+- `text_check`: `not-run` `ok` `failed` `n/a`（`ai` 以外は `n/a`。AIの全点目視一致とP5一覧承認後に更新。文字だけの追加承認は不要）
 - `text_mask_version`: `ai` のP6では最終 `text-check-vNN` と一致する正の版番号。それ以外は `0`
 - `materials`: `pending` `received`
 - `publish`: LINE への審査申請意図を表す `yes` `local-only` `unknown`（`local-only` はローカル確認用で、LINE 上では配布・利用できない）

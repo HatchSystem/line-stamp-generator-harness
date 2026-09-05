@@ -1,4 +1,2 @@
 Pillow>=10.0
 numpy>=1.24
-# optional, text_mode=ai の OCR 照合に使用（tesseract 本体と jpn.traineddata が別途必要）
-# pytesseract>=0.3

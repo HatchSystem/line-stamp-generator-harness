@@ -83,7 +83,6 @@ const PYTHON_EXTERNAL_MODULES = new Set([
   "numpy",
   "os",
   "pathlib",
-  "pytesseract",
   "re",
   "runpy",
   "shutil",
@@ -1808,16 +1807,18 @@ function validateWorkflowContracts() {
     /write_new_files\(/.test(verifyText) &&
       /path\.open\(["']xb["']\)/.test(verifyText) &&
       /["']--review-dir["']\s*,\s*required=True/.test(verifyText) &&
-      /return\s+1\s+if\s+counts\["near"\]\s+or\s+counts\["mismatch"\]\s+else\s+0/.test(verifyText) &&
+      /return 0 if all\(row\["status"\] == "match" for row in rows\) else 1/.test(verifyText) &&
       /load_static_session\(project_dir,\s*\{["']P4["']\s*,\s*["']P5["']\}\)/.test(verifyText) &&
       /manifest_sha256/.test(verifyText) &&
       /["']scope["']\s*:\s*scope/.test(verifyText) &&
-      /--vision-evidence/.test(verifyText) &&
+      /--visual-review/.test(verifyText) &&
+      /ai-visual/.test(verifyText) &&
+      !/pytesseract|run_ocr|ocr_available/.test(verifyText) &&
       /text-masks/.test(verifyText),
     "VERIFY_TEXT_EVIDENCE",
     TEXT_EVIDENCE_IMPLEMENTATION,
     0,
-    "AI文字検査は自動経路と文字マスクを持ち、nearを成功扱いせず版付き保存してください",
+    "AI文字検査は目視記録と文字マスクを版付き保存し、全点一致以外を成功扱いしないでください",
   );
 
   check(
@@ -2166,15 +2167,13 @@ function validateRootAdapter() {
     if (!check(fs.existsSync(absolute(adapter)), "CLAUDE_CHOICE_ADAPTER", adapter, 0, "Claude 選択アダプタがありません")) continue;
     const adapterText = readText(adapter);
     check(
-      adapterText.includes("AskUserQuestion") &&
-        /最大3問/.test(adapterText) &&
-        /推奨案を先頭/.test(adapterText) &&
-        /相互排他的/.test(adapterText) &&
-        /利用できない(?:環境|場合)[^\n]*番号付き選択肢/.test(adapterText),
-      "CLAUDE_STRUCTURED_CHOICES",
+      /通常のチャット/.test(adapterText) &&
+        /AskUserQuestion[^。\n]*使わない/.test(adapterText) &&
+        !/フォールバック|最大3問/.test(adapterText),
+      "CLAUDE_CHAT_CHOICES",
       adapter,
       0,
-      "Claude の有限選択は AskUserQuestion、最大3問、推奨先頭、相互排他、利用不可時だけ番号付きフォールバックを明記してください",
+      "質問と承認は通常のチャットで行い、質問ツールを使わないことを明記してください",
     );
   }
   for (const shared of [
@@ -2183,11 +2182,11 @@ function validateRootAdapter() {
     ".agents/skills/line-stamp-generator/references/dialogue.md",
   ]) {
     check(
-      !readText(shared).includes("AskUserQuestion"),
+      !readText(shared).includes("AskUserQuestion") && /通常のチャット/.test(readText(shared)),
       "SHARED_VENDOR_NEUTRAL_CHOICES",
       shared,
       0,
-      "共通層では製品固有の選択ツール名を使わず、構造化選択 UI と表現してください",
+      "共通層では製品固有の選択ツール名を使わず、通常のチャットでの対話を明記してください",
     );
   }
 

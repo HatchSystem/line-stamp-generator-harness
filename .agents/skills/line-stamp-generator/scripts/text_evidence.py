@@ -1,34 +1,20 @@
-"""Create automatic AI-text evidence and versioned text-region masks."""
+"""Record AI visual text checks and versioned text-region masks."""
 from __future__ import annotations
 
 import argparse
-import difflib
 import hashlib
 import io
 import json
 import os
 import re
-import unicodedata
-from datetime import datetime
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageOps
+from PIL import Image, ImageDraw
 
 from metadata_utils import loads_no_duplicates
 from project_context import enforce_facade_project
-from session_contract import load_static_session, read_regular_bytes
+from session_contract import load_static_session, read_regular_bytes, visual_text_matches
 from transaction_utils import exclusive_lock
-
-WHITESPACE = re.compile(r"[\s\u3000]+")
-LOOSE_STRIP = re.compile(r"[!！?？。、,，.．・:：;；()（）\[\]「」『』\"'…♪☆★♡♥〜~ー―—-]+")
-VISION_PROVIDER_BLOCKLIST = {"agent", "main-agent", "user", "manual", "visual-only"}
-
-
-def normalize(text: str, loose: bool) -> str:
-    text = unicodedata.normalize("NFKC" if loose else "NFC", text)
-    text = WHITESPACE.sub("", text)
-    return LOOSE_STRIP.sub("", text).lower() if loose else text
-
 
 def checked_project_paths(
     manifest_value: str, stamp_value: str, review_value: str
@@ -63,47 +49,6 @@ def checked_project_paths(
             f"projects/ACTIVE={active!r} does not select project {project_dir.name!r}"
         )
     return manifest, stamps, review
-
-
-def ocr_available(lang: str) -> tuple[bool, str]:
-    try:
-        import pytesseract  # noqa: F401
-    except ImportError:
-        return False, "pytesseract is not installed"
-    try:
-        import pytesseract
-
-        languages = pytesseract.get_languages(config="")
-    except Exception as exc:
-        return False, f"Tesseract is unavailable: {exc}"
-    missing = [part for part in lang.split("+") if part not in languages]
-    if missing:
-        return False, f"Tesseract language data is missing: {missing}"
-    return True, ""
-
-
-def prepare(image: Image.Image, scale: int) -> Image.Image:
-    rgba = image.convert("RGBA")
-    white = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
-    flat = ImageOps.autocontrast(Image.alpha_composite(white, rgba).convert("L"))
-    if scale > 1:
-        flat = flat.resize(
-            (flat.width * scale, flat.height * scale), Image.Resampling.LANCZOS
-        )
-    return flat
-
-
-def run_ocr(image: Image.Image, lang: str, scale: int) -> str:
-    import pytesseract
-
-    best = ""
-    for psm in (6, 7, 11):
-        candidate = pytesseract.image_to_string(
-            prepare(image, scale), lang=lang, config=f"--psm {psm}"
-        ).strip()
-        if len(candidate) > len(best):
-            best = candidate
-    return best
 
 
 def next_version(review_dir: Path) -> int:
@@ -176,7 +121,7 @@ def expected_text(item: dict, position: int) -> str:
         result = "".join(value)
     else:
         raise ValueError(f"manifest.items[{position}].text must be a string or string list")
-    if not normalize(result, False):
+    if not result.strip():
         raise ValueError(f"manifest.items[{position}].text must not be empty")
     return result
 
@@ -215,79 +160,50 @@ def mask_payload(size: tuple[int, int], region: tuple[int, int, int, int]) -> by
     return output.getvalue()
 
 
-def load_vision_evidence(
+def load_visual_review(
     value: str,
     project_dir: Path,
     manifest_sha256: str,
     selected_ids: set[int],
-) -> tuple[str, str, dict[int, dict], str, str]:
+) -> dict[int, dict]:
+    """Read AI observations; this function does not recognize images."""
     path = Path(value)
     if path.is_symlink() or not path.is_file():
-        raise ValueError("--vision-evidence must be a regular non-symlink JSON file")
+        raise ValueError("--visual-review must be a regular non-symlink JSON file")
     resolved = path.resolve()
-    if not resolved.is_relative_to(project_dir.resolve()):
-        raise ValueError("--vision-evidence must stay inside the active project")
     allowed = ((project_dir / "review").resolve(), (project_dir / "meta").resolve())
-    if not any(resolved.is_relative_to(root) for root in allowed):
-        raise ValueError("--vision-evidence must stay under project review/ or meta/")
-    source_payload = read_regular_bytes(resolved)
-    payload = loads_no_duplicates(source_payload.decode("utf-8"))
-    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
-        raise ValueError("vision evidence must be a schema_version 1 object")
-    provider = payload.get("provider")
-    model = payload.get("model")
-    generated_at = payload.get("generated_at")
-    if (
-        not isinstance(provider, str)
-        or not provider.strip()
-        or provider.strip().lower() in VISION_PROVIDER_BLOCKLIST
-        or not isinstance(model, str)
-        or not model.strip()
-        or not isinstance(generated_at, str)
-        or not generated_at.strip()
+    if not resolved.is_relative_to(project_dir.resolve()) or not any(
+        resolved.is_relative_to(root) for root in allowed
     ):
-        raise ValueError("vision evidence requires an independent provider, model, and generated_at")
-    try:
-        generated_datetime = datetime.fromisoformat(generated_at)
-    except ValueError as exc:
-        raise ValueError("vision evidence generated_at must be an ISO-8601 datetime") from exc
-    if generated_datetime.tzinfo is None:
-        raise ValueError("vision evidence generated_at must include a UTC offset")
+        raise ValueError("--visual-review must stay under the active project review/ or meta/")
+    payload = loads_no_duplicates(read_regular_bytes(resolved).decode("utf-8"))
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != 1
+        or payload.get("method") != "ai-visual"
+    ):
+        raise ValueError("visual review requires schema_version 1 and method ai-visual")
     if payload.get("manifest_sha256") != manifest_sha256:
-        raise ValueError("vision evidence does not match current manifest.json")
+        raise ValueError("visual review does not match current manifest.json")
     items = payload.get("items")
     if not isinstance(items, list):
-        raise ValueError("vision evidence items must be an array")
+        raise ValueError("visual review items must be an array")
     by_id: dict[int, dict] = {}
     for row in items:
         if not isinstance(row, dict) or type(row.get("id")) is not int:
-            raise ValueError("vision evidence contains an invalid item")
+            raise ValueError("visual review contains an invalid item")
         row_id = row["id"]
         if row_id in by_id:
-            raise ValueError(f"vision evidence duplicates id {row_id}")
+            raise ValueError(f"visual review duplicates id {row_id}")
+        status = row.get("status")
+        if not isinstance(status, str) or status not in {
+            "match", "mismatch", "unreadable", "not-run"
+        } or not isinstance(row.get("recognized"), str):
+            raise ValueError(f"visual review requires recognized text and status for id {row_id}")
         by_id[row_id] = row
     if set(by_id) != selected_ids:
-        raise ValueError("vision evidence ids do not match the requested scope")
-    source_file = resolved.relative_to(project_dir.resolve()).as_posix()
-    return (
-        provider.strip(),
-        model.strip(),
-        by_id,
-        source_file,
-        hashlib.sha256(source_payload).hexdigest(),
-    )
-
-
-def classify(expected: str, recognized: str, minimum: float) -> tuple[str, float]:
-    strict = normalize(expected, False) == normalize(recognized, False)
-    loose_expected = normalize(expected, True)
-    loose_recognized = normalize(recognized, True)
-    similarity = difflib.SequenceMatcher(None, loose_expected, loose_recognized).ratio()
-    if strict:
-        return "match", round(similarity, 3)
-    if loose_expected == loose_recognized or similarity >= minimum:
-        return "near", round(similarity, 3)
-    return "mismatch", round(similarity, 3)
+        raise ValueError("visual review ids do not match the requested scope")
+    return by_id
 
 
 def write_new_files(entries: list[tuple[Path, bytes]]) -> None:
@@ -315,12 +231,7 @@ def build_rows(
     manifest_items: list,
     selected_ids: set[int],
     stamp_dir: Path,
-    available: bool,
-    vision_rows: dict[int, dict],
-    automatic_provider: str,
-    lang: str,
-    scale: int,
-    minimum: float,
+    visual_rows: dict[int, dict],
 ) -> tuple[list[dict], dict[int, bytes]]:
     rows: list[dict] = []
     masks: dict[int, bytes] = {}
@@ -334,10 +245,8 @@ def build_rows(
             "file": path.name,
             "sha256": None,
             "expected": "",
-            "automatic_text": "",
-            "automatic_provider": automatic_provider or None,
+            "recognized": "",
             "status": "",
-            "similarity": None,
             "text_region": item.get("text_region"),
             "mask_file": None,
             "mask_sha256": None,
@@ -353,25 +262,17 @@ def build_rows(
             region = text_region(item, image.size, position)
             row["text_region"] = list(region)
             masks[index] = mask_payload(image.size, region)
-            if available:
-                recognized = run_ocr(image, lang, scale)
-            elif vision_rows:
-                vision_row = vision_rows[index]
-                if (
-                    vision_row.get("file") != path.name
-                    or vision_row.get("sha256") != row["sha256"]
-                    or vision_row.get("expected") != expected
-                    or not isinstance(vision_row.get("recognized"), str)
-                ):
-                    raise ValueError(f"vision evidence does not match current {path.name}")
-                recognized = vision_row["recognized"]
-            else:
-                recognized = ""
-            row["automatic_text"] = recognized.replace("\n", "/")
-            if automatic_provider:
-                row["status"], row["similarity"] = classify(expected, recognized, minimum)
-            else:
-                row["status"] = "automatic-unavailable"
+            observation = visual_rows[index]
+            if (
+                observation.get("file") != path.name
+                or observation.get("sha256") != row["sha256"]
+                or observation.get("expected") != expected
+            ):
+                raise ValueError(f"visual review does not match current {path.name}")
+            row["recognized"] = observation["recognized"]
+            row["status"] = observation["status"]
+            if row["status"] == "match" and not visual_text_matches(expected, row["recognized"]):
+                row["status"] = "mismatch"
         except (OSError, ValueError, RuntimeError) as exc:
             row["status"] = "unreadable"
             row["error"] = str(exc)
@@ -379,28 +280,25 @@ def build_rows(
     return rows, masks
 
 
+def markdown_cell(value: str) -> str:
+    return value.replace("&", "&amp;").replace("<", "&lt;").replace(
+        ">", "&gt;"
+    ).replace("|", "&#124;").replace("\r", "").replace("\n", "<br>")
+
+
 def run() -> int:
     parser = argparse.ArgumentParser(
-        description="Create automatic evidence and text masks for AI-drawn stamp text"
+        description="Record AI visual observations and text masks (does not recognize images)"
     )
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--dir", required=True, help="same project's stamps/ directory")
     parser.add_argument("--review-dir", required=True)
-    parser.add_argument("--lang", default="jpn+eng")
-    parser.add_argument("--scale", type=int, default=2)
     parser.add_argument("--only", help="P4 only: comma-separated stamp ids")
     parser.add_argument(
-        "--vision-evidence",
-        help="independent vision JSON fallback used only when Tesseract is unavailable",
+        "--visual-review", required=True,
+        help="JSON observations recorded by the AI after opening each final image",
     )
-    parser.add_argument("--min-similarity", type=float, default=0.85)
     args = parser.parse_args()
-    if not 1 <= args.scale <= 8:
-        print("ERROR verify-text: --scale must be from 1 through 8")
-        return 1
-    if not 0.0 <= args.min_similarity <= 1.0:
-        print("ERROR verify-text: --min-similarity must be from 0 through 1")
-        return 1
 
     try:
         manifest_path, stamp_dir, review_dir = checked_project_paths(
@@ -428,34 +326,14 @@ def run() -> int:
         print(f"ERROR verify-text: {exc}")
         return 1
 
-    available, reason = ocr_available(args.lang)
-    automatic_provider = "tesseract" if available else ""
-    automatic_model = args.lang if available else ""
-    automatic_method = "ocr" if available else ""
-    vision_rows: dict[int, dict] = {}
-    vision_source_file: str | None = None
-    vision_source_sha256: str | None = None
-    if not available and args.vision_evidence:
-        try:
-            (
-                automatic_provider,
-                automatic_model,
-                vision_rows,
-                vision_source_file,
-                vision_source_sha256,
-            ) = load_vision_evidence(
-                args.vision_evidence, manifest_path.parent, manifest_sha256, selected_ids
-            )
-            automatic_method = "vision"
-            reason = "Tesseract unavailable; independent vision evidence used"
-        except (OSError, UnicodeError, ValueError) as exc:
-            print(f"ERROR verify-text: invalid vision fallback: {exc}")
-            return 1
-
-    rows, masks = build_rows(
-        manifest["items"], selected_ids, stamp_dir, available, vision_rows,
-        automatic_provider, args.lang, args.scale, args.min_similarity
-    )
+    try:
+        visual_rows = load_visual_review(
+            args.visual_review, manifest_path.parent, manifest_sha256, selected_ids
+        )
+    except (OSError, UnicodeError, ValueError) as exc:
+        print(f"ERROR verify-text: invalid visual review: {exc}")
+        return 1
+    rows, masks = build_rows(manifest["items"], selected_ids, stamp_dir, visual_rows)
     try:
         if review_dir.exists() and not review_dir.is_dir():
             raise ValueError("review path must be a directory")
@@ -491,45 +369,36 @@ def run() -> int:
                     entries.append((mask_dir / mask_name, payload))
                 scope = "sample" if session["gate"] == "P4" else "all"
                 report = {
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "version": version,
                     "project": manifest_path.parent.name,
                     "gate": session["gate"],
                     "scope": scope,
                     "session_count": int(session["count"]),
                     "manifest_sha256": manifest_sha256,
-                    "automatic_available": bool(automatic_provider),
-                    "automatic_method": automatic_method or None,
-                    "automatic_provider": automatic_provider or None,
-                    "automatic_model": automatic_model or None,
-                    "vision_evidence_file": vision_source_file,
-                    "vision_evidence_sha256": vision_source_sha256,
-                    "reason": reason,
+                    "method": "ai-visual",
                     "rows": rows,
                 }
                 lines = [
                     f"# text-check v{version:02d}", "",
                     f"- project: `{manifest_path.parent.name}`",
                     f"- gate: `{session['gate']}`", f"- scope: `{scope}`",
-                    f"- automatic: `{automatic_provider or 'unavailable'}`",
-                    f"- model/language: `{automatic_model or 'n/a'}`",
-                    "- user approval: required before setting SESSION text_check=ok", "",
-                    "| id | expected | automatic text | similarity | status | mask |",
-                    "|---|---|---|---|---|---|",
+                    "- method: ai-visual (observations supplied by the AI)",
+                    "- user approval: P4 adoption / P5 full review before SESSION text_check=ok", "",
+                    "| id | expected | AI reading | status |",
+                    "|---|---|---|---|",
                 ]
                 for row in rows:
-                    similarity = "" if row["similarity"] is None else f"{row['similarity']:.2f}"
-                    expected = str(row["expected"]).replace("|", "\\|")
-                    recognized = str(row["automatic_text"]).replace("|", "\\|")
-                    mask_name = Path(row["mask_file"]).name if row["mask_file"] else ""
+                    expected = markdown_cell(row["expected"])
+                    recognized = markdown_cell(row["recognized"])
                     lines.append(
-                        f"| {row['id']:02d} | {expected} | {recognized} | {similarity} | "
-                        f"{row['status']} | {mask_name} |"
+                        f"| {row['id']:02d} | {expected} | {recognized} | {row['status']} |"
                     )
+                    if row.get("error"):
+                        lines.append(f"\n{row['id']:02d}: {markdown_cell(row['error'])}\n")
                 lines.extend([
-                    "", "Automatic checking never replaces agent visual reading or user approval.",
-                    "`near` and `mismatch` require explicit visual reconciliation or regeneration.",
-                    "`automatic-unavailable` cannot satisfy P6; use Tesseract or independent vision evidence.",
+                    "", "The CLI records observations; it does not recognize or visually inspect images.",
+                    "Only match on every image can satisfy P6 after P5 user approval.",
                     "Text masks exclude only declared text regions from micro-hole checks.", "",
                 ])
                 md_path = review_dir / f"text-check-v{version:02d}.md"
@@ -550,17 +419,12 @@ def run() -> int:
         print(f"ERROR verify-text: could not write evidence: {exc}")
         return 1
 
-    statuses = ("match", "near", "mismatch", "automatic-unavailable", "unreadable")
+    statuses = ("match", "mismatch", "unreadable", "not-run")
     counts = {status: sum(row["status"] == status for row in rows) for status in statuses}
     print(
-        f"text-check v{version:02d}: checked={len(rows)} provider={automatic_provider or 'none'} "
+        f"text-check v{version:02d}: checked={len(rows)} method=ai-visual "
         + " ".join(f"{key}={value}" for key, value in counts.items())
     )
     print(f"report: {md_path}")
     print(f"masks: {mask_dir}")
-    if counts["unreadable"]:
-        return 1
-    if not automatic_provider:
-        print("Automatic text checking is unavailable; P6 remains blocked.")
-        return 2
-    return 1 if counts["near"] or counts["mismatch"] else 0
+    return 0 if all(row["status"] == "match" for row in rows) else 1

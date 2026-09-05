@@ -6,6 +6,7 @@ import json
 import os
 import re
 import stat
+import unicodedata
 from pathlib import Path
 
 from metadata_utils import loads_no_duplicates
@@ -171,10 +172,19 @@ def require_three_view_evidence(project_dir: Path, session: dict[str, str]) -> P
     return evidence_path
 
 
+def visual_text_matches(expected: str, recognized: str) -> bool:
+    """Ignore layout whitespace, preserving punctuation and glyph distinctions."""
+
+    def normalized(value: str) -> str:
+        return "".join(unicodedata.normalize("NFC", value).split())
+
+    return bool(normalized(expected)) and normalized(expected) == normalized(recognized)
+
+
 def require_complete_text_evidence(
     project_dir: Path, count: int, mask_version: int | None = None
 ) -> None:
-    """Require automatic text evidence and masks for every current P5 stamp."""
+    """Require visual observations (or approved legacy evidence) and current masks."""
     review_dir = project_dir / "review"
     if review_dir.is_symlink() or not review_dir.is_dir():
         raise ValueError("P6 AI text_check=ok requires a regular review/ directory")
@@ -198,7 +208,7 @@ def require_complete_text_evidence(
     if not isinstance(report, dict):
         raise ValueError("P5 text evidence root must be an object")
     if (
-        report.get("schema_version") != 2
+        report.get("schema_version") not in (2, 3)
         or report.get("version") != report_version
         or report.get("project") != project_dir.name
         or report.get("gate") != "P5"
@@ -208,39 +218,63 @@ def require_complete_text_evidence(
         raise ValueError("latest text evidence is not a complete P5 report for this SESSION")
     if mask_version is not None and report_version != mask_version:
         raise ValueError("SESSION text_mask_version does not match latest P5 text evidence")
-    if report.get("automatic_available") is not True:
-        raise ValueError("P5 text evidence has no automatic checker; P6 remains blocked")
-    provider = report.get("automatic_provider")
-    model = report.get("automatic_model")
-    method = report.get("automatic_method")
-    if (
-        method not in {"ocr", "vision"}
-        or not isinstance(provider, str)
-        or not provider.strip()
-        or not isinstance(model, str)
-        or not model.strip()
-    ):
-        raise ValueError("P5 text evidence is missing its automatic provider or model")
-    if method == "vision":
-        source_value = report.get("vision_evidence_file")
-        if not isinstance(source_value, str):
-            raise ValueError("P5 vision fallback is missing its source evidence file")
-        source_raw = Path(source_value)
-        if source_raw.is_absolute() or source_raw.parts[:1] not in {("review",), ("meta",)}:
-            raise ValueError("P5 vision evidence file must stay under project review/ or meta/")
-        source_path = (project_dir / source_raw).resolve()
-        if not source_path.is_relative_to(project_dir.resolve()):
-            raise ValueError("P5 vision evidence file escapes the project")
-        if report.get("vision_evidence_sha256") != sha256_file(source_path):
-            raise ValueError("P5 vision evidence source has changed")
-    elif report.get("vision_evidence_file") is not None or report.get(
-        "vision_evidence_sha256"
-    ) is not None:
-        raise ValueError("P5 OCR evidence must not claim a vision fallback source")
+    visual = report.get("schema_version") == 3
+    if visual:
+        if report.get("method") != "ai-visual":
+            raise ValueError("P5 text evidence requires method ai-visual")
+    else:
+        # Read-only compatibility for previously approved schema 2 reports.
+        if report.get("automatic_available") is not True:
+            raise ValueError("P5 text evidence has no automatic checker; P6 remains blocked")
+        provider = report.get("automatic_provider")
+        model = report.get("automatic_model")
+        method = report.get("automatic_method")
+        if (
+            method not in ("ocr", "vision")
+            or not isinstance(provider, str)
+            or not provider.strip()
+            or not isinstance(model, str)
+            or not model.strip()
+        ):
+            raise ValueError("P5 text evidence is missing its automatic provider or model")
+        if method == "vision":
+            source_value = report.get("vision_evidence_file")
+            if not isinstance(source_value, str):
+                raise ValueError("P5 vision fallback is missing its source evidence file")
+            source_raw = Path(source_value)
+            if source_raw.is_absolute() or source_raw.parts[:1] not in {("review",), ("meta",)}:
+                raise ValueError("P5 vision evidence file must stay under project review/ or meta/")
+            source_path = (project_dir / source_raw).resolve()
+            if not source_path.is_relative_to(project_dir.resolve()):
+                raise ValueError("P5 vision evidence file escapes the project")
+            if report.get("vision_evidence_sha256") != sha256_file(source_path):
+                raise ValueError("P5 vision evidence source has changed")
+        elif report.get("vision_evidence_file") is not None or report.get(
+            "vision_evidence_sha256"
+        ) is not None:
+            raise ValueError("P5 OCR evidence must not claim a vision fallback source")
 
     manifest_path = project_dir / "manifest.json"
     if report.get("manifest_sha256") != sha256_file(manifest_path):
         raise ValueError("P5 text evidence does not match the current manifest.json")
+    expected_by_id: dict[int, str] = {}
+    if visual:
+        manifest = loads_no_duplicates(read_regular_bytes(manifest_path).decode("utf-8"))
+        items = manifest.get("items") if isinstance(manifest, dict) else None
+        if not isinstance(items, list):
+            raise ValueError("P5 visual review requires manifest items")
+        for item in items:
+            if not isinstance(item, dict) or type(item.get("id")) is not int:
+                raise ValueError("P5 visual review manifest has an invalid id")
+            item_id = item["id"]
+            value = item.get("text")
+            if isinstance(value, list) and value and all(isinstance(line, str) for line in value):
+                value = "".join(value)
+            if item_id in expected_by_id or not isinstance(value, str) or not value.strip():
+                raise ValueError("P5 visual review manifest has duplicate ids or invalid text")
+            expected_by_id[item_id] = value
+        if set(expected_by_id) != set(range(1, count + 1)):
+            raise ValueError("P5 visual review manifest ids do not match SESSION count")
     rows = report.get("rows")
     if not isinstance(rows, list) or len(rows) != count:
         raise ValueError("P5 text evidence rows do not match SESSION count")
@@ -269,7 +303,16 @@ def require_complete_text_evidence(
             raise ValueError(f"P5 text evidence has empty expected text for {name}")
         if row.get("file") != name or row.get("sha256") != sha256_file(project_dir / "stamps" / name):
             raise ValueError(f"P5 text evidence does not match current {name}")
-        if row.get("automatic_provider") != provider or not isinstance(
+        if visual:
+            recognized = row.get("recognized")
+            if (
+                status != "match"
+                or row["expected"] != expected_by_id[row_id]
+                or not isinstance(recognized, str)
+                or not visual_text_matches(row["expected"], recognized)
+            ):
+                raise ValueError(f"P5 AI visual review is incomplete or mismatched for {name}")
+        elif row.get("automatic_provider") != provider or not isinstance(
             row.get("automatic_text"), str
         ):
             raise ValueError(f"P5 automatic text evidence is incomplete for {name}")
