@@ -8,13 +8,17 @@
 python scripts/line_stamp.py project --root . list
 python scripts/line_stamp.py project --root . new --slug usagi
 python scripts/line_stamp.py project --root . confirm-p0 --materials received --source photo --count 16 --text yes --text-mode font --character-name ハッチくん --sample-candidates 1 --publish yes
+python scripts/line_stamp.py project --root . confirm-design --image refs/design-v01.png --reference refs/source.png --hairstyle "短い黒髪" --head-ratio 2.2 --clothing "青い上着" --color "#1A2B3C" --color "#F4D7C5" --eyes "丸い黒目" --accessories "なし"
+python scripts/line_stamp.py project --root . confirm-three-view --image refs/three-view-v01.png
 python scripts/line_stamp.py project --root . use usagi
 python scripts/line_stamp.py project --root . status
 ```
 
 `new` は `^[a-z0-9][a-z0-9-]{1,39}$`（2〜40文字、先頭は英小文字または数字）に合う実名でない slug で、隔離された `gate: P0` のプロジェクトを作る。Windows の予約デバイス名とハーネス予約名 `active` は使えず、既存 slug も拒否される。素材をその `refs/` へ置き、P0 の全回答を復唱して承認を得てから `confirm-p0` を実行する。このコマンドは `refs/` 直下の通常ファイルと、`source`、枚数、文字状態、表示名、候補数、申請意図を一括検証・保存し、矛盾がなければ `gate: P1` へ進める。`adult`、`consent`、`rights` は引数にも SESSION にも持たない。文字なしでは `--text no --text-mode none` を指定する。
 
-旧形式のプロジェクトは対象を `use` してから診断する。最初のコマンドは dry-run で、2つ目だけがバックアップ作成後に書き込む。v3 への移行では廃止済みの `adult`、`consent`、`rights` と、空の既定値だった `license_proof` を削除し、ユーザーが提示済みの任意資料は維持する。欠落した `materials` は、P0 なら `pending`、P1 以降なら `refs/` の読取可能な非空素材を確認できたときだけ `received` にする。ゲートと承認状態は変更しない。
+`confirm-design` はP1の画像・数値仕様・参考画像を版付きハッシュ証跡として固定し、以前の三面図以降の承認を無効化する。`confirm-three-view` はP2画像を現在のP1証跡へ結び付ける。画像は先に例の版付きファイル名で `refs/` へ保存する。
+
+旧形式のプロジェクトは対象を `use` してから診断する。最初のコマンドは dry-run で、2つ目だけがバックアップ作成後に書き込む。v4 への移行ではP1/P2証跡、文字マスク、P8アカウント項目を未確認状態で追加し、旧P9と審査後状態を制作完了へ移す。廃止済みの `adult`、`consent`、`rights` と、空の既定値だった `license_proof` は削除する。
 
 ```powershell
 python scripts/line_stamp.py project --root . migrate
@@ -41,7 +45,7 @@ python scripts/line_stamp.py preprocess-character projects/usagi/raw/stamp01.png
 
 [static-manifest.example.json](../assets/static-manifest.example.json) を `projects/usagi/manifest.json` へコピーし、`text_mode`、フォント、色、セリフ、キャラクター画像を設定する。`font` を使う場合は、日本語フォントを `projects/usagi/fonts/` に置く。manifest 内の相対パスは manifest のあるディレクトリを基準に解決される。`items[].text` は両方式で承認済みセリフを一字一句そのまま書く（`ai` では検査の正解として使う）。
 
-manifest の `style.text_mode` は SESSION と一致させる。P4 の合成は item 01 だけ、P5 は ID が `1..SESSION count` と完全一致する全点だけを受け付ける。
+manifest の `style.text_mode` は SESSION と一致させる。P4 の合成は item 01 だけ、P5 は ID が `1..SESSION count` と完全一致する全点だけを受け付ける。`style.safe_margin` は12〜16、推奨16とし、最終合成後の実測余白が12px未満なら内容を自動縮小する。`ai` は各 item に、最終画像上の文字だけを囲む `text_region: [left, top, right, bottom]` を指定する。
 
 `text_mode: font` では文字レイヤーを保存するため `--text-layer-dir` が必須である。
 
@@ -61,25 +65,27 @@ python scripts/line_stamp.py compose-static --manifest projects/usagi/manifest.j
 
 ## 文字検査（`text_mode: ai` のみ）
 
-生成AIは誤字・脱字・鏡文字を出す。合成後に OCR で照合し、報告を版付きで残す。
+生成AIは誤字・脱字・鏡文字を出す。合成後にTesseractを優先して照合し、報告と文字領域マスクを版付きで残す。Tesseractが使えない場合だけ、別の画像認識モデルによる独立証跡をフォールバックとして利用できる。
 
 ```powershell
 # P4: stamp01 の標本だけ
 python scripts/line_stamp.py verify-text --manifest projects/usagi/manifest.json --dir projects/usagi/stamps --review-dir projects/usagi/review --only 1
 # P5: SESSION count の全点（--only は付けない）
 python scripts/line_stamp.py verify-text --manifest projects/usagi/manifest.json --dir projects/usagi/stamps --review-dir projects/usagi/review
+# Tesseract利用不能時だけ。JSON形式は assets/vision-text-evidence.example.json を参照
+python scripts/line_stamp.py verify-text --manifest projects/usagi/manifest.json --dir projects/usagi/stamps --review-dir projects/usagi/review --vision-evidence projects/usagi/review/vision-text-evidence.json
 ```
 
-- exit 0: 全点が記号・大小文字も含めて `match`。exit 1: `near` / `mismatch` / 画像欠落 / manifest 不備があり、目視確認または入力修正が必要。exit 2: 入力は有効だが OCR 不可（全点を目視）
+- exit 0: 全点が `match`。exit 1: `near` / `mismatch` / 入力不備があり、確認または修正が必要。exit 2: Tesseractも独立画像認識証跡もなく、自動検査を満たせないためP6をブロック
 - `near` は OCR ノイズの可能性が残るため成功扱いにしない。エージェントが画像を読んで判断材料をユーザーへ出す
 - P4 は `gate: P4` と `--only 1`、P5 の最終証跡は `gate: P5`、`manifest.items` の ID が `1..SESSION count` と完全一致し、`--only` なしであることを必須にする。部分再検査だけを全点合格にはしない
 - `--only` が空、または指定 id が manifest にない場合は検査を開始せず exit 1 にする。空の `manifest.items` や AI スタンプの空テキストも成功扱いにしない
-- OCR 結果だけで合否や再生成を決めない。エージェントが各画像の文字を読み上げ、ユーザーが「全点正しい / 誤字あり（番号）」で承認して初めて SESSION `text_check: ok` にする。再生成は実画像でも不一致と確認された番号だけにする
-- 日本語 OCR には tesseract 本体と `jpn.traineddata` が必要（`pip install pytesseract`）。無い環境では exit 2 になり、目視承認だけで判定する
+- 自動検査だけで合否や再生成を決めない。エージェントが各画像の文字を読み上げ、ユーザーが「全点正しい / 誤字あり（番号）」で承認して初めて SESSION `text_check: ok` と最新の `text_mask_version` を記録する
+- 独立画像認識証跡は provider、model、生成日時、manifestハッシュと各画像ハッシュ・期待文字・認識文字を持つ。生成と確認を同じメインエージェントの主観だけで済ませた記録は自動検査として扱わない
 
 ## 確認一覧
 
-P5 の `SESSION count` と完全一致する `stamp01.png` からの連番だけを、白系・濃色の背景へ並べて透過と可読性を確認する。欠品・余剰・`stamp-draft.png` のような非正規名は拒否する。出力は v01 から始め、既存最大版の次番号だけを使い、上書きしない。
+P5 の `SESSION count` と完全一致する全画像を必ず1枚へまとめ、白系・濃色の背景へ並べて透過と可読性を確認する。欠品・余剰・`stamp-draft.png` のような非正規名は拒否する。出力は v01 から始め、既存最大版の次番号だけを使い、上書きしない。
 
 ```powershell
 python scripts/line_stamp.py make-contact-sheet --input projects/usagi/stamps --output projects/usagi/review/review-v01.png --cols 4
@@ -97,7 +103,7 @@ P5 承認後に SESSION を P6 へ進めてから梱包・検証する。`packag
 
 `package-static` はレビュー済み内部正本 `stamps/stampNN.png` を提出用の `submit/NN.png` へ番号対応でコピーする。`submit/` 配下の同一 filesystem 上に一時成果物を完成させてから、管理対象の `main.png` `tab.png` `NN.png` と指定 ZIP だけを置換する。ZIP member は `main.png`、`tab.png`、`01.png`〜`NN.png` だけにする。無関係なファイルやサブディレクトリを削除しない。旧枚数の数値名PNGが残っていれば `validate-pack` が余剰として止める。旧形式の `submit/stampNN.png` は削除せず警告し、ZIPから除外する。
 
-`text_mode: ai` では `--text-mode ai` を付ける。文字のカウンターを穴と誤判定しないよう穴検査をスキップし、代わりに濃色背景の確認一覧を目視する。
+`text_mode: ai` では `--text-mode ai` を付ける。`validate-pack` は最新の版付き文字領域マスクを使い、「口」「日」など文字内の穴だけを除外して、文字領域外の微小穴を検査する。マスク欠落・ハッシュ不一致・キャラクターを過度に覆う広い領域はエラーになる。
 
 `validate-pack` は文字の自然なカウンターを切り抜き漏れと誤判定しないよう、内部名 `character-layers/stampNN.png` のキャラクター単独レイヤーへ微小穴検査を行う。提出名 `submit/NN.png` の寸法、偶数幅/高さ、RGB/RGBA、72dpi 以上、透過、容量を確認し、対応するレビュー済み `stamps/stampNN.png` およびZIP内の同名memberとバイト一致することも検査する。
 
@@ -110,3 +116,15 @@ python scripts/line_stamp.py check-publish-ready --session projects/usagi/SESSIO
 ```
 
 エラー0で P7 のメタ案提示、承認後に [publish.md](publish.md) へ進む。
+
+## 制作中の学びとP8完了
+
+問題または教訓は、その場で対象プロジェクトへ追記する。秘密情報や個人情報は引数へ含めない。
+
+```powershell
+python scripts/line_stamp.py project --root . record-learning --gate P5 --kind problem --summary "余白不足" --impact "検証停止" --cause "上端へ寄り過ぎ" --resolution "自動縮小" --candidate "安全余白を生成時から固定"
+python scripts/line_stamp.py project --root . confirm-account --account-name "表示名" --seller-id "販売者ID" --registration-target "新規スタンプ登録"
+python scripts/line_stamp.py project --root . complete-production --account-name "表示名" --seller-id "販売者ID" --registration-target "新規スタンプ登録" --preview-confirmed
+```
+
+P8は `confirm-account` 後も入力直前に画面表示との一致を確認する。入力とプレビューのユーザー確認が終わったら `complete-production` が `production-complete` を保存し、定型の制作完了メッセージを表示する。審査リクエスト後の状態は扱わない。

@@ -16,6 +16,7 @@ from metadata_utils import DuplicateKeyError, loads_no_duplicates
 from project_context import enforce_facade_project
 from session_contract import (
     require_complete_text_evidence,
+    require_three_view_evidence,
     require_review_evidence,
 )
 from validate_pack import (
@@ -31,7 +32,7 @@ DESCRIPTION_RANGE = (10, 160)
 CREATOR_MAX = 50
 COPYRIGHT_MAX = 50
 MAX_TAGS_PER_STAMP = 9
-SESSION_SCHEMA_VERSION = "3"
+SESSION_SCHEMA_VERSION = "4"
 SUBMISSION_SCHEMA_VERSION = 3
 PROJECT_SLUG_RE = re.compile(r"[a-z0-9][a-z0-9-]{1,39}")
 WINDOWS_RESERVED_NAMES = {
@@ -476,7 +477,7 @@ def check_session_state(
     """Require a complete P7 state instead of accepting a few isolated flags."""
     if session.get("schema_version") != SESSION_SCHEMA_VERSION:
         errors.append(
-            "SESSION schema_version must be 3; inspect the active project with public command "
+            "SESSION schema_version must be 4; inspect the active project with public command "
             "`project --root . migrate`"
         )
     deprecated = sorted(DEPRECATED_SESSION_KEYS.intersection(session))
@@ -507,6 +508,16 @@ def check_session_state(
     review_version = session.get("review_version", "")
     if re.fullmatch(r"[1-9][0-9]{0,8}", review_version) is None:
         errors.append("SESSION review_version must be a positive version approved at P5")
+    design_version = session.get("design_version", "")
+    three_view_version = session.get("three_view_version", "")
+    if re.fullmatch(r"[1-9][0-9]{0,8}", design_version) is None:
+        errors.append("SESSION design_version must be a positive approved P1 version")
+    elif session.get("design_evidence") != f"refs/design-v{int(design_version):02d}.json":
+        errors.append("SESSION design_evidence must match design_version")
+    if session.get("three_view") != "approved" or re.fullmatch(
+        r"[1-9][0-9]{0,8}", three_view_version
+    ) is None:
+        errors.append("SESSION three_view must have a positive approved P2 version")
 
     text = session.get("text", "missing")
     text_mode = session.get("text_mode", "missing")
@@ -590,6 +601,10 @@ def main() -> None:
         else:
             errors.extend(session_errors)
             check_session_state(session, session_path, errors)
+            try:
+                require_three_view_evidence(project_dir, session)
+            except ValueError as exc:
+                errors.append(f"P7 design evidence: {exc}")
             evidence_count_value = session.get("count", "")
             review_version_value = session.get("review_version", "")
             if evidence_count_value in {str(value) for value in ALLOWED_COUNTS}:
@@ -603,7 +618,14 @@ def main() -> None:
                         errors.append(f"P7 review evidence: {exc}")
                 if session.get("text_mode") == "ai":
                     try:
-                        require_complete_text_evidence(project_dir, evidence_count)
+                        mask_value = session.get("text_mask_version", "")
+                        if re.fullmatch(r"[1-9][0-9]{0,8}", mask_value) is None:
+                            raise ValueError(
+                                "SESSION text_mask_version must be positive for AI text"
+                            )
+                        require_complete_text_evidence(
+                            project_dir, evidence_count, int(mask_value)
+                        )
                     except ValueError as exc:
                         errors.append(f"P7 AI text evidence: {exc}")
 
@@ -698,7 +720,7 @@ def main() -> None:
                 None,
                 (80, 80),
                 (370, 320),
-                8,
+                12,
                 errors,
                 warnings,
             )
@@ -712,7 +734,7 @@ def main() -> None:
         print("WARN", message)
     if errors:
         raise SystemExit(1)
-    print("READY: present metadata for P7 approval; the user presses the review request button in P8")
+    print("READY: present metadata for P7 approval; P8 ends after registration input and preview confirmation")
 
 
 if __name__ == "__main__":

@@ -204,6 +204,7 @@ def main() -> None:
         "version": version,
         "project": input_dir.parent.name,
         "gate": "P5",
+        "presentation": "all-stamps-light-dark",
         "session_count": session_count(session),
         "review_file": output.name,
         "review_sha256": hashlib.sha256(payload).hexdigest(),

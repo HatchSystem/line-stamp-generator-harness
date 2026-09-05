@@ -75,6 +75,32 @@ def internal_hole_sizes(image: Image.Image, threshold: int = 16) -> list[int]:
     return sorted((len(component) for component in _components(holes)), reverse=True)
 
 
+def internal_hole_sizes_outside_mask(
+    image: Image.Image,
+    excluded_mask: Image.Image,
+    threshold: int = 16,
+) -> list[int]:
+    """Return hole sizes except components wholly contained by a binary text mask."""
+    rgba = np.asarray(image.convert("RGBA"))
+    mask = np.asarray(excluded_mask.convert("L"))
+    if mask.shape != rgba.shape[:2]:
+        raise ValueError("text mask dimensions must match the inspected image")
+    unique = set(int(value) for value in np.unique(mask))
+    if not unique.issubset({0, 255}):
+        raise ValueError("text mask must be binary (0 or 255)")
+    covered = int(np.count_nonzero(mask == 255))
+    if covered == 0 or covered > mask.size * 0.6:
+        raise ValueError("text mask must cover a non-empty text-only region of at most 60%")
+    transparent = rgba[..., 3] < threshold
+    holes = transparent & ~edge_connected(transparent)
+    sizes: list[int] = []
+    for component in _components(holes):
+        if all(mask[y, x] == 255 for y, x in component):
+            continue
+        sizes.append(len(component))
+    return sorted(sizes, reverse=True)
+
+
 def fill_small_transparent_holes(
     image: Image.Image,
     max_pixels: int = 64,
@@ -146,6 +172,47 @@ def fit_canvas(image: Image.Image, width: int, height: int, margin: int) -> Imag
     canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     canvas.alpha_composite(fitted, ((width - fitted.width) // 2, (height - fitted.height) // 2))
     return canvas
+
+
+def visible_margins(image: Image.Image, threshold: int = 12) -> tuple[int, int, int, int] | None:
+    """Measure transparent space around visible alpha as left, top, right, bottom."""
+    rgba = image.convert("RGBA")
+    bbox = rgba.getchannel("A").point(lambda value: 255 if value >= threshold else 0).getbbox()
+    if bbox is None:
+        return None
+    left, top, right, bottom = bbox
+    return left, top, rgba.width - right, rgba.height - bottom
+
+
+def enforce_safe_margin(
+    image: Image.Image,
+    *,
+    required: int = 12,
+    target: int = 16,
+    threshold: int = 12,
+) -> tuple[Image.Image, bool]:
+    """Auto-fit all visible content when any edge is below the required margin."""
+    if required < 0 or target < required:
+        raise ValueError("safe margin target must be at least the required margin")
+    rgba = image.convert("RGBA")
+    margins = visible_margins(rgba, threshold)
+    if margins is None or min(margins) >= required:
+        return rgba, False
+    bbox = rgba.getchannel("A").point(lambda value: 255 if value >= threshold else 0).getbbox()
+    if bbox is None:
+        return rgba, False
+    inner_width = rgba.width - target * 2
+    inner_height = rgba.height - target * 2
+    if inner_width < 2 or inner_height < 2:
+        raise ValueError("safe margin leaves no drawable content area")
+    content = rgba.crop(bbox)
+    content.thumbnail((inner_width, inner_height), Image.Resampling.LANCZOS)
+    canvas = Image.new("RGBA", rgba.size, (0, 0, 0, 0))
+    canvas.alpha_composite(
+        content,
+        ((rgba.width - content.width) // 2, (rgba.height - content.height) // 2),
+    )
+    return canvas, True
 
 
 def save_png(image: Image.Image, path: Path, max_bytes: int = 1_000_000) -> None:

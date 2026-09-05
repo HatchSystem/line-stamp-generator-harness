@@ -8,7 +8,13 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-from image_utils import fill_small_transparent_holes, sanitize_alpha, save_png, trim_alpha
+from image_utils import (
+    enforce_safe_margin,
+    fill_small_transparent_holes,
+    sanitize_alpha,
+    save_png,
+    trim_alpha,
+)
 from metadata_utils import loads_no_duplicates
 from project_context import enforce_facade_project
 from session_contract import load_static_session, session_count
@@ -209,10 +215,13 @@ def main() -> None:
         raise ValueError("Canvas dimensions must be even")
     text_zone = int(style.get("text_zone_height", 90)) if draw_text else 0
     margin = int(style.get("margin", 10))
+    safe_margin = int(style.get("safe_margin", 16))
     spacing = int(style.get("line_spacing", 4))
     stroke_width = int(style.get("outline_width", 5))
     if margin < 0 or spacing < 0 or stroke_width < 0 or text_zone < 0:
         raise ValueError("style margin, line_spacing, outline_width and text_zone_height must be nonnegative")
+    if safe_margin not in range(12, 17):
+        raise ValueError("style.safe_margin must be from 12 through 16 pixels")
     if margin * 2 >= canvas_width or margin >= canvas_height or text_zone + margin >= canvas_height:
         raise ValueError("style margins and text zone leave no drawable character area")
     font_value = style.get("font")
@@ -313,6 +322,13 @@ def main() -> None:
                     )
 
                 final = sanitize_alpha(Image.alpha_composite(character_layer, text_layer), alpha_floor)
+                final, margin_adjusted = enforce_safe_margin(
+                    final,
+                    required=12,
+                    target=safe_margin,
+                    threshold=alpha_floor,
+                )
+                final = sanitize_alpha(final, alpha_floor)
                 name = f"stamp{index:02d}.png"
                 staged_final = staging / "stamps" / name
                 staged_character = staging / "character-layers" / name
@@ -325,7 +341,10 @@ def main() -> None:
                     staged_text = staging / "text-layers" / name
                     save_png(sanitize_alpha(text_layer, alpha_floor), staged_text)
                     installs.append((staged_text, text_layer_dir / name))
-                messages.append(f"wrote {name} mode={text_mode} text={'/'.join(lines)}")
+                messages.append(
+                    f"wrote {name} mode={text_mode} text={'/'.join(lines)} "
+                    f"safe-margin={'adjusted' if margin_adjusted else 'ok'}"
+                )
 
             for directory in (outdir, character_layer_dir, text_layer_dir):
                 if directory is not None:

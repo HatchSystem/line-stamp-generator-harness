@@ -15,6 +15,7 @@ STATIC_COUNTS = {8, 16, 24, 32, 40}
 DEPRECATED_SESSION_KEYS = {"adult", "consent", "rights"}
 TEXT_REPORT_RE = re.compile(r"text-check-v([0-9]+)\.json")
 REVIEW_EVIDENCE_RE = re.compile(r"review-v([0-9]{2,})\.json")
+HEX_COLOR_RE = re.compile(r"#[0-9A-F]{6}")
 
 
 def project_stamp_name(index: int) -> str:
@@ -61,8 +62,119 @@ def sha256_file(path: Path) -> str:
     return hashlib.sha256(read_regular_bytes(path)).hexdigest()
 
 
-def require_complete_text_evidence(project_dir: Path, count: int) -> None:
-    """Require the latest AI text report to bind every current P5 input by hash."""
+def project_relative_evidence(project_dir: Path, value: object, label: str) -> Path:
+    if not isinstance(value, str):
+        raise ValueError(f"{label} must be a project-relative path")
+    raw = Path(value)
+    if raw.is_absolute() or raw.parts[:1] != ("refs",):
+        raise ValueError(f"{label} must stay under project refs/")
+    path = (project_dir / raw).resolve()
+    if not path.is_relative_to(project_dir.resolve() / "refs"):
+        raise ValueError(f"{label} escapes project refs/")
+    return path
+
+
+def require_design_evidence(project_dir: Path, session: dict[str, str]) -> Path:
+    """Validate the immutable P1 checklist, image, and reference hashes."""
+    version_value = session.get("design_version", "")
+    if re.fullmatch(r"[1-9][0-9]{0,8}", version_value) is None:
+        raise ValueError("approved artifacts require a positive SESSION design_version")
+    version = int(version_value)
+    expected_path = project_dir / "refs" / f"design-v{version:02d}.json"
+    evidence_path = project_relative_evidence(
+        project_dir, session.get("design_evidence"), "SESSION design_evidence"
+    )
+    if evidence_path != expected_path.resolve():
+        raise ValueError("SESSION design_evidence does not match design_version")
+    try:
+        evidence = loads_no_duplicates(read_regular_bytes(evidence_path).decode("utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ValueError(f"cannot read strict design evidence: {exc}") from exc
+    if not isinstance(evidence, dict) or any(
+        (
+            evidence.get("schema_version") != 1,
+            evidence.get("version") != version,
+            evidence.get("project") != project_dir.name,
+            evidence.get("gate") != "P1",
+        )
+    ):
+        raise ValueError("design evidence does not match SESSION P1 contract")
+    checklist = evidence.get("checklist")
+    required_text = ("hairstyle", "clothing", "eyes", "accessories")
+    if not isinstance(checklist, dict) or any(
+        not isinstance(checklist.get(key), str) or not checklist[key].strip()
+        for key in required_text
+    ):
+        raise ValueError("design evidence checklist has missing text fields")
+    ratio = checklist.get("head_ratio") if isinstance(checklist, dict) else None
+    if type(ratio) not in {int, float} or not 1.0 <= float(ratio) <= 5.0:
+        raise ValueError("design evidence head_ratio must be numeric from 1.0 through 5.0")
+    palette = checklist.get("palette") if isinstance(checklist, dict) else None
+    if (
+        not isinstance(palette, list)
+        or not palette
+        or len(palette) > 12
+        or any(not isinstance(value, str) or HEX_COLOR_RE.fullmatch(value) is None for value in palette)
+        or len(palette) != len(set(palette))
+    ):
+        raise ValueError("design evidence palette must contain 1-12 distinct uppercase HEX colors")
+    if checklist.get("background") != "transparent":
+        raise ValueError("design evidence background must be transparent")
+    image_path = project_relative_evidence(project_dir, evidence.get("design_file"), "design_file")
+    spec_path = project_relative_evidence(project_dir, evidence.get("spec_file"), "spec_file")
+    if (
+        image_path.name != f"design-v{version:02d}.png"
+        or spec_path.name != f"design-v{version:02d}.md"
+        or evidence.get("design_sha256") != sha256_file(image_path)
+        or evidence.get("spec_sha256") != sha256_file(spec_path)
+    ):
+        raise ValueError("design evidence files or hashes do not match the approved version")
+    references = evidence.get("references")
+    if not isinstance(references, list) or not references:
+        raise ValueError("design evidence requires at least one reference image")
+    for item in references:
+        if not isinstance(item, dict):
+            raise ValueError("design evidence contains an invalid reference row")
+        reference_path = project_relative_evidence(project_dir, item.get("file"), "reference")
+        if item.get("sha256") != sha256_file(reference_path):
+            raise ValueError(f"design reference hash changed: {reference_path.name}")
+    return evidence_path
+
+
+def require_three_view_evidence(project_dir: Path, session: dict[str, str]) -> Path:
+    """Bind P2 approval to the exact current P1 evidence and image bytes."""
+    design_path = require_design_evidence(project_dir, session)
+    version_value = session.get("three_view_version", "")
+    if session.get("three_view") != "approved" or re.fullmatch(
+        r"[1-9][0-9]{0,8}", version_value
+    ) is None:
+        raise ValueError("approved artifacts require a positive P2 three_view_version")
+    version = int(version_value)
+    evidence_path = project_dir / "refs" / f"three-view-v{version:02d}.json"
+    try:
+        evidence = loads_no_duplicates(read_regular_bytes(evidence_path).decode("utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ValueError(f"cannot read strict three-view evidence: {exc}") from exc
+    image_path = project_dir / "refs" / f"three-view-v{version:02d}.png"
+    if (
+        not isinstance(evidence, dict)
+        or evidence.get("schema_version") != 1
+        or evidence.get("version") != version
+        or evidence.get("project") != project_dir.name
+        or evidence.get("gate") != "P2"
+        or evidence.get("three_view_file") != f"refs/{image_path.name}"
+        or evidence.get("three_view_sha256") != sha256_file(image_path)
+        or evidence.get("design_evidence") != session.get("design_evidence")
+        or evidence.get("design_evidence_sha256") != sha256_file(design_path)
+    ):
+        raise ValueError("three-view evidence does not match the current approved P1 design")
+    return evidence_path
+
+
+def require_complete_text_evidence(
+    project_dir: Path, count: int, mask_version: int | None = None
+) -> None:
+    """Require automatic text evidence and masks for every current P5 stamp."""
     review_dir = project_dir / "review"
     if review_dir.is_symlink() or not review_dir.is_dir():
         raise ValueError("P6 AI text_check=ok requires a regular review/ directory")
@@ -86,7 +198,7 @@ def require_complete_text_evidence(project_dir: Path, count: int) -> None:
     if not isinstance(report, dict):
         raise ValueError("P5 text evidence root must be an object")
     if (
-        report.get("schema_version") != 1
+        report.get("schema_version") != 2
         or report.get("version") != report_version
         or report.get("project") != project_dir.name
         or report.get("gate") != "P5"
@@ -94,6 +206,37 @@ def require_complete_text_evidence(project_dir: Path, count: int) -> None:
         or report.get("session_count") != count
     ):
         raise ValueError("latest text evidence is not a complete P5 report for this SESSION")
+    if mask_version is not None and report_version != mask_version:
+        raise ValueError("SESSION text_mask_version does not match latest P5 text evidence")
+    if report.get("automatic_available") is not True:
+        raise ValueError("P5 text evidence has no automatic checker; P6 remains blocked")
+    provider = report.get("automatic_provider")
+    model = report.get("automatic_model")
+    method = report.get("automatic_method")
+    if (
+        method not in {"ocr", "vision"}
+        or not isinstance(provider, str)
+        or not provider.strip()
+        or not isinstance(model, str)
+        or not model.strip()
+    ):
+        raise ValueError("P5 text evidence is missing its automatic provider or model")
+    if method == "vision":
+        source_value = report.get("vision_evidence_file")
+        if not isinstance(source_value, str):
+            raise ValueError("P5 vision fallback is missing its source evidence file")
+        source_raw = Path(source_value)
+        if source_raw.is_absolute() or source_raw.parts[:1] not in {("review",), ("meta",)}:
+            raise ValueError("P5 vision evidence file must stay under project review/ or meta/")
+        source_path = (project_dir / source_raw).resolve()
+        if not source_path.is_relative_to(project_dir.resolve()):
+            raise ValueError("P5 vision evidence file escapes the project")
+        if report.get("vision_evidence_sha256") != sha256_file(source_path):
+            raise ValueError("P5 vision evidence source has changed")
+    elif report.get("vision_evidence_file") is not None or report.get(
+        "vision_evidence_sha256"
+    ) is not None:
+        raise ValueError("P5 OCR evidence must not claim a vision fallback source")
 
     manifest_path = project_dir / "manifest.json"
     if report.get("manifest_sha256") != sha256_file(manifest_path):
@@ -120,13 +263,22 @@ def require_complete_text_evidence(project_dir: Path, count: int) -> None:
             "match",
             "near",
             "mismatch",
-            "visual-required",
         }:
             raise ValueError(f"P5 text evidence has an incomplete status for {name}")
         if not isinstance(row.get("expected"), str) or not row["expected"].strip():
             raise ValueError(f"P5 text evidence has empty expected text for {name}")
         if row.get("file") != name or row.get("sha256") != sha256_file(project_dir / "stamps" / name):
             raise ValueError(f"P5 text evidence does not match current {name}")
+        if row.get("automatic_provider") != provider or not isinstance(
+            row.get("automatic_text"), str
+        ):
+            raise ValueError(f"P5 automatic text evidence is incomplete for {name}")
+        expected_mask = f"text-masks/v{report_version:02d}/{name}"
+        if row.get("mask_file") != expected_mask:
+            raise ValueError(f"P5 text mask path does not match {name}")
+        mask_path = project_dir / expected_mask
+        if row.get("mask_sha256") != sha256_file(mask_path):
+            raise ValueError(f"P5 text mask does not match current {name}")
 
 
 def require_review_evidence(project_dir: Path, count: int, version: int) -> None:
@@ -158,6 +310,7 @@ def require_review_evidence(project_dir: Path, count: int, version: int) -> None
         or evidence.get("session_count") != count
         or evidence.get("review_file") != image_path.name
         or evidence.get("review_sha256") != sha256_file(image_path)
+        or evidence.get("presentation") != "all-stamps-light-dark"
     ):
         raise ValueError("review evidence does not match SESSION or its versioned review image")
     rows = evidence.get("stamps")
@@ -184,7 +337,7 @@ def require_review_evidence(project_dir: Path, count: int, version: int) -> None
 
 
 def load_static_session(project_dir: Path, allowed_gates: set[str]) -> dict[str, str]:
-    """Load an unambiguous schema-v3 SESSION and validate its static-pack fields."""
+    """Load an unambiguous schema-v4 SESSION and validate its static-pack fields."""
     session_path = project_dir / "SESSION.md"
     if session_path.is_symlink() or not session_path.is_file():
         raise ValueError("active project SESSION.md must be a regular non-symlink file")
@@ -203,8 +356,8 @@ def load_static_session(project_dir: Path, allowed_gates: set[str]) -> dict[str,
             raise ValueError(f"SESSION key {key!r} is duplicated (line {line_number})")
         values[key] = value.strip()
 
-    if values.get("schema_version") != "3":
-        raise ValueError("SESSION schema_version must be 3")
+    if values.get("schema_version") != "4":
+        raise ValueError("SESSION schema_version must be 4")
     deprecated = sorted(DEPRECATED_SESSION_KEYS.intersection(values))
     if deprecated:
         raise ValueError(
@@ -221,6 +374,8 @@ def load_static_session(project_dir: Path, allowed_gates: set[str]) -> dict[str,
         )
     if values.get("materials") != "received":
         raise ValueError("artifact commands after P0 require SESSION materials=received")
+    if gate in {"P4", "P5", "P6"}:
+        require_three_view_evidence(project_dir, values)
     count_value = values.get("count", "")
     if count_value not in {str(value) for value in STATIC_COUNTS}:
         raise ValueError(f"SESSION count={count_value!r} is not a supported static count")
@@ -242,9 +397,19 @@ def load_static_session(project_dir: Path, allowed_gates: set[str]) -> dict[str,
         if gate == "P6":
             if text_check != "ok":
                 raise ValueError("SESSION text_mode=ai at P6 requires text_check=ok")
-            require_complete_text_evidence(project_dir, count)
-    elif text_check != "n/a":
-        raise ValueError(f"SESSION text_mode={text_mode!r} requires text_check=n/a")
+            mask_value = values.get("text_mask_version", "")
+            if re.fullmatch(r"[1-9][0-9]{0,8}", mask_value) is None:
+                raise ValueError(
+                    "SESSION text_mode=ai at P6 requires a positive text_mask_version"
+                )
+            require_complete_text_evidence(project_dir, count, int(mask_value))
+    else:
+        if text_check != "n/a":
+            raise ValueError(f"SESSION text_mode={text_mode!r} requires text_check=n/a")
+        if values.get("text_mask_version") != "0":
+            raise ValueError(
+                f"SESSION text_mode={text_mode!r} requires text_mask_version=0"
+            )
     if gate == "P6":
         review_value = values.get("review_version", "")
         if re.fullmatch(r"[1-9][0-9]{0,8}", review_value) is None:

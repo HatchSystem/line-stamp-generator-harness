@@ -32,8 +32,10 @@ from check_publish_ready import (
 )
 from image_utils import (
     add_white_outline,
+    enforce_safe_margin,
     fill_small_transparent_holes,
     hidden_rgb_pixels,
+    internal_hole_sizes_outside_mask,
     sanitize_alpha,
     save_png,
 )
@@ -50,8 +52,13 @@ from project import (
     ProjectPathError,
     atomic_write_text,
     cmd_confirm_p0,
+    cmd_complete_production,
+    cmd_confirm_account,
+    cmd_confirm_design,
+    cmd_confirm_three_view,
     cmd_migrate,
     cmd_new,
+    cmd_record_learning,
     cmd_use,
     migrated_submission,
     parse_session_for_migration,
@@ -78,7 +85,13 @@ from validate_pack import (
     validate_stamp_sources,
     validate_zip,
 )
-from verify_text import next_version, verification_scope, verification_session
+from text_evidence import (
+    load_vision_evidence,
+    next_version,
+    text_region,
+    verification_scope,
+    verification_session,
+)
 import transaction_utils
 
 
@@ -94,6 +107,7 @@ def write_review_evidence_fixture(project: Path, count: int, version: int = 1) -
         "version": version,
         "project": project.name,
         "gate": "P5",
+        "presentation": "all-stamps-light-dark",
         "session_count": count,
         "review_file": image_path.name,
         "review_sha256": sha256_file(image_path),
@@ -108,6 +122,78 @@ def write_review_evidence_fixture(project: Path, count: int, version: int = 1) -
     }
     (review_dir / f"review-v{version:02d}.json").write_text(
         json.dumps(evidence, ensure_ascii=False, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+
+
+def write_design_evidence_fixture(project: Path) -> None:
+    """Create P1/P2 evidence and bind the fixture SESSION to it."""
+    refs = project / "refs"
+    refs.mkdir(exist_ok=True)
+    source = refs / "source.png"
+    design = refs / "design-v01.png"
+    three_view = refs / "three-view-v01.png"
+    for path, color in (
+        (source, (60, 80, 100, 255)),
+        (design, (80, 100, 120, 255)),
+        (three_view, (100, 120, 140, 255)),
+    ):
+        save_png(Image.new("RGBA", (80, 80), color), path)
+    spec = refs / "design-v01.md"
+    spec.write_text("# Design v01\n\nfixture\n", encoding="utf-8")
+    design_evidence = {
+        "schema_version": 1,
+        "version": 1,
+        "project": project.name,
+        "gate": "P1",
+        "checklist": {
+            "hairstyle": "short",
+            "head_ratio": 2.2,
+            "clothing": "blue jacket",
+            "palette": ["#1A2B3C", "#F4D7C5"],
+            "eyes": "round",
+            "accessories": "none",
+            "background": "transparent",
+        },
+        "design_file": "refs/design-v01.png",
+        "design_sha256": sha256_file(design),
+        "spec_file": "refs/design-v01.md",
+        "spec_sha256": sha256_file(spec),
+        "references": [
+            {"file": "refs/source.png", "sha256": sha256_file(source)}
+        ],
+    }
+    evidence_path = refs / "design-v01.json"
+    evidence_path.write_text(
+        json.dumps(design_evidence, ensure_ascii=False, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+    three_evidence = {
+        "schema_version": 1,
+        "version": 1,
+        "project": project.name,
+        "gate": "P2",
+        "three_view_file": "refs/three-view-v01.png",
+        "three_view_sha256": sha256_file(three_view),
+        "design_evidence": "refs/design-v01.json",
+        "design_evidence_sha256": sha256_file(evidence_path),
+    }
+    (refs / "three-view-v01.json").write_text(
+        json.dumps(three_evidence, ensure_ascii=False, allow_nan=False) + "\n",
+        encoding="utf-8",
+    )
+    session = project / "SESSION.md"
+    session.write_text(
+        update_session_text(
+            session.read_text(encoding="utf-8"),
+            {
+                "design_version": "1",
+                "design_evidence": "refs/design-v01.json",
+                "lock": "approved",
+                "three_view": "approved",
+                "three_view_version": "1",
+            },
+        ),
         encoding="utf-8",
     )
 
@@ -309,7 +395,7 @@ def main() -> None:
         assert any("must not be empty" in message for message in empty_prompt_errors)
 
     complete_session = {
-        "schema_version": "3",
+        "schema_version": "4",
         "project": "demo",
         "materials": "received",
         "source": "character",
@@ -317,11 +403,16 @@ def main() -> None:
         "text": "yes",
         "text_mode": "font",
         "text_check": "n/a",
+        "text_mask_version": "0",
         "gate": "P7",
         "character": "Hatch",
         "publish": "yes",
         "validation": "ok",
         "review_version": "1",
+        "design_version": "1",
+        "design_evidence": "refs/design-v01.json",
+        "three_view": "approved",
+        "three_view_version": "1",
         "submission": "not-started",
     }
     session_errors: list[str] = []
@@ -357,7 +448,7 @@ def main() -> None:
     }.items():
         updates, errors = session_migration_updates({"publish": old_publish, "gate": "P0"})
         assert not errors
-        assert updates["schema_version"] == "3"
+        assert updates["schema_version"] == "4"
         assert updates["materials"] == "pending"
         assert updates.get("publish", old_publish) == expected
     _, errors = session_migration_updates({"publish": "surprise", "gate": "P0"})
@@ -377,9 +468,23 @@ def main() -> None:
     updates, errors = session_migration_updates(pending_legacy, materials_available=True)
     assert not errors and updates["materials"] == "received"
     updates, errors = session_migration_updates(
-        {"schema_version": "02", "publish": "yes", "materials": "received"}
+        {"schema_version": "02", "publish": "yes", "materials": "received", "gate": "P0"}
     )
-    assert not errors and updates["schema_version"] == "3"
+    assert not errors and updates["schema_version"] == "4"
+    updates, errors = session_migration_updates(
+        {
+            "schema_version": "3",
+            "publish": "yes",
+            "materials": "received",
+            "gate": "P9",
+            "submission": "approved",
+            "notes": "legacy",
+        }
+    )
+    assert not errors
+    assert updates["gate"] == "P8"
+    assert updates["submission"] == "production-complete"
+    assert "pre-v4 submission status was approved" in updates["notes"]
 
     old_session = (
         "# SESSION\n\n- project: sample\n- publish: private\n- gate: P6\n"
@@ -392,7 +497,7 @@ def main() -> None:
     migrated_session = remove_session_keys(
         update_session_text(old_session, updates), {"adult", "consent", "rights"}
     )
-    assert "- schema_version: 3" in migrated_session
+    assert "- schema_version: 4" in migrated_session
     assert "- publish: local-only" in migrated_session
     assert "- materials: received" in migrated_session
     assert not any(
@@ -529,7 +634,9 @@ def main() -> None:
         with redirect_stdout(sink), redirect_stderr(sink):
             assert cmd_confirm_p0(Namespace(**base_intake)) == 1
         assert session_path.read_bytes() == before_rejection
-        source_material.write_bytes(b"p0 fixture")
+        Image.new("RGB", (80, 80), (90, 110, 130)).save(
+            source_material, format="JPEG"
+        )
         session_with_deprecated_field = session_path.read_text(encoding="utf-8").replace(
             "- publish: unknown\n", "- publish: unknown\n- consent: yes\n"
         )
@@ -547,6 +654,73 @@ def main() -> None:
         with redirect_stdout(sink), redirect_stderr(sink):
             assert cmd_confirm_p0(Namespace(**base_intake)) == 1
         assert session_path.read_bytes() == after_confirmation
+
+        project = session_path.parent
+        save_png(
+            Image.new("RGBA", (80, 80), (30, 80, 120, 255)),
+            project / "refs" / "design-v01.png",
+        )
+        design_args = Namespace(
+            root=str(root),
+            image="refs/design-v01.png",
+            reference=["refs/source.jpg"],
+            hairstyle="short black hair",
+            head_ratio=2.2,
+            clothing="blue jacket",
+            color=["#1A2B3C", "#F4D7C5"],
+            eyes="round black eyes",
+            accessories="none",
+        )
+        with redirect_stdout(sink), redirect_stderr(sink):
+            assert cmd_confirm_design(design_args) == 0
+        design_values = parse_session_for_migration(
+            session_path.read_text(encoding="utf-8")
+        )[0]
+        assert design_values["gate"] == "P2" and design_values["design_version"] == "1"
+        save_png(
+            Image.new("RGBA", (120, 80), (40, 90, 130, 255)),
+            project / "refs" / "three-view-v01.png",
+        )
+        with redirect_stdout(sink), redirect_stderr(sink):
+            assert cmd_confirm_three_view(
+                Namespace(root=str(root), image="refs/three-view-v01.png")
+            ) == 0
+        with redirect_stdout(sink), redirect_stderr(sink):
+            assert cmd_record_learning(
+                Namespace(
+                    root=str(root), gate="P3", kind="lesson", summary="fixture",
+                    impact="none", cause="test", resolution="recorded", candidate="reuse",
+                )
+            ) == 0
+        assert "[lesson] fixture" in (project / "LEARNINGS.md").read_text(encoding="utf-8")
+
+        session_path.write_text(
+            update_session_text(
+                session_path.read_text(encoding="utf-8"),
+                {"gate": "P8", "validation": "ok", "submission": "drafted"},
+            ),
+            encoding="utf-8",
+        )
+        account_args = Namespace(
+            root=str(root), account_name="Creator", seller_id="seller-1",
+            registration_target="new-static-sticker",
+        )
+        with redirect_stdout(sink), redirect_stderr(sink):
+            assert cmd_confirm_account(account_args) == 0
+        wrong_completion = Namespace(
+            root=str(root), account_name="Other", seller_id="seller-1",
+            registration_target="new-static-sticker", preview_confirmed=True,
+        )
+        with redirect_stdout(sink), redirect_stderr(sink):
+            assert cmd_complete_production(wrong_completion) == 1
+        completion = Namespace(
+            root=str(root), account_name="Creator", seller_id="seller-1",
+            registration_target="new-static-sticker", preview_confirmed=True,
+        )
+        completion_output = StringIO()
+        with redirect_stdout(completion_output), redirect_stderr(completion_output):
+            assert cmd_complete_production(completion) == 0
+        assert "制作が完了しました。問題なければ審査リクエストを実施してください。" in completion_output.getvalue()
 
         try:
             project_directory(str(root), "../escape")
@@ -600,17 +774,19 @@ def main() -> None:
         (harness / "projects" / "ACTIVE").write_text("demo\n", encoding="utf-8")
         (project / "SESSION.md").write_text(
             "# SESSION\n\n"
-            "- schema_version: 3\n"
+            "- schema_version: 4\n"
             "- project: demo\n"
             "- materials: received\n"
             "- count: 8\n"
             "- text: yes\n"
             "- text_mode: ai\n"
             "- text_check: not-run\n"
+            "- text_mask_version: 0\n"
             "- review_version: 0\n"
             "- gate: P5\n",
             encoding="utf-8",
         )
+        write_design_evidence_fixture(project)
         outdir, character_dir, text_dir = checked_output_directories(
             project,
             str(project / "stamps"),
@@ -747,27 +923,68 @@ def main() -> None:
         assert next_version(project / "review") == 3
         manifest_path = project / "manifest.json"
         manifest_path.write_text('{"items": "P5 evidence fixture"}\n', encoding="utf-8")
+        vision_path = project / "review" / "vision-evidence.json"
+        vision_fixture = {
+            "schema_version": 1,
+            "provider": "fixture-provider",
+            "model": "fixture-model-v1",
+            "generated_at": "2026-09-05T12:00:00+09:00",
+            "manifest_sha256": sha256_file(manifest_path),
+            "items": [
+                {
+                    "id": index,
+                    "file": f"stamp{index:02d}.png",
+                    "sha256": sha256_file(project / "stamps" / f"stamp{index:02d}.png"),
+                    "expected": f"line {index}",
+                    "recognized": f"line {index}",
+                }
+                for index in range(1, 9)
+            ],
+        }
+        vision_path.write_text(
+            json.dumps(vision_fixture, ensure_ascii=False, allow_nan=False) + "\n",
+            encoding="utf-8",
+        )
+        provider, model, vision_rows, source_file, source_hash = load_vision_evidence(
+            str(vision_path), project, sha256_file(manifest_path), set(range(1, 9))
+        )
+        assert provider == "fixture-provider" and model == "fixture-model-v1"
+        assert len(vision_rows) == 8 and source_file == "review/vision-evidence.json"
+        assert source_hash == sha256_file(vision_path)
         evidence_rows = [
             {
                 "id": index,
                 "file": f"stamp{index:02d}.png",
                 "sha256": sha256_file(project / "stamps" / f"stamp{index:02d}.png"),
                 "expected": f"line {index}",
-                "ocr": "",
-                "status": "visual-required",
-                "similarity": None,
+                "automatic_text": f"line {index}",
+                "automatic_provider": "fixture-vision",
+                "status": "match",
+                "similarity": 1.0,
+                "text_region": [0, 0, 8, 8],
+                "mask_file": f"text-masks/v03/stamp{index:02d}.png",
+                "mask_sha256": "pending",
             }
             for index in range(1, 9)
         ]
+        mask_dir = project / "text-masks" / "v03"
+        mask_dir.mkdir(parents=True)
+        for row in evidence_rows:
+            mask_path = project / row["mask_file"]
+            Image.new("L", (8, 8), 255).save(mask_path, format="PNG")
+            row["mask_sha256"] = sha256_file(mask_path)
         evidence = {
-            "schema_version": 1,
+            "schema_version": 2,
             "version": 3,
             "project": "demo",
             "gate": "P5",
             "scope": "all",
             "session_count": 8,
             "manifest_sha256": sha256_file(manifest_path),
-            "ocr_available": False,
+            "automatic_available": True,
+            "automatic_method": "ocr",
+            "automatic_provider": "fixture-vision",
+            "automatic_model": "fixture-v1",
             "reason": "fixture",
             "rows": evidence_rows,
         }
@@ -778,7 +995,7 @@ def main() -> None:
         (project / "review" / "text-check-v03.md").write_text(
             "# complete P5 fixture\n", encoding="utf-8"
         )
-        require_complete_text_evidence(project, 8)
+        require_complete_text_evidence(project, 8, 3)
         write_review_evidence_fixture(project, 8)
         require_review_evidence(project, 8, 1)
         malformed_evidence = dict(evidence)
@@ -789,7 +1006,7 @@ def main() -> None:
             encoding="utf-8",
         )
         try:
-            require_complete_text_evidence(project, 8)
+            require_complete_text_evidence(project, 8, 3)
         except ValueError:
             pass
         else:
@@ -800,7 +1017,9 @@ def main() -> None:
         )
         p6_approved_source = p5_session_source.replace(
             "- text_check: not-run", "- text_check: ok"
-        ).replace("- review_version: 0", "- review_version: 1").replace(
+        ).replace("- text_mask_version: 0", "- text_mask_version: 3").replace(
+            "- review_version: 0", "- review_version: 1"
+        ).replace(
             "- gate: P5", "- gate: P6"
         )
         (project / "SESSION.md").write_text(p6_approved_source, encoding="utf-8")
@@ -934,13 +1153,16 @@ def main() -> None:
         with redirect_stdout(sink), redirect_stderr(sink):
             assert cmd_migrate(Namespace(root=str(root), apply=True)) == 0
         migrated_values = parse_session_for_migration(session_path.read_text(encoding="utf-8"))[0]
-        assert migrated_values["schema_version"] == "3"
+        assert migrated_values["schema_version"] == "4"
         assert migrated_values["materials"] == "received"
         assert not any(key in migrated_values for key in ("adult", "consent", "rights"))
         written_meta = json.loads(submission_path.read_text(encoding="utf-8"))
         assert written_meta["schema_version"] == 3 and written_meta["sales_start"] == "manual"
-        assert list(project.glob("SESSION.md.pre-v3-*.bak"))
-        assert list((project / "meta").glob("submission.json.pre-v3-*.bak"))
+        assert (project / "LEARNINGS.md").read_text(encoding="utf-8").startswith(
+            "# Project learnings\n"
+        )
+        assert list(project.glob("SESSION.md.pre-v4-*.bak"))
+        assert list((project / "meta").glob("submission.json.pre-v4-*.bak"))
         backups_after_first_apply = list(project.rglob("*.bak"))
         with redirect_stdout(sink), redirect_stderr(sink):
             assert cmd_migrate(Namespace(root=str(root), apply=True)) == 0
@@ -1004,6 +1226,28 @@ def main() -> None:
         warnings: list[str] = []
         validate_png(valid_path, None, (80, 80), (370, 320), 8, errors, warnings)
         assert not errors
+
+        margin_11 = Image.new("RGBA", (80, 80), (0, 0, 0, 0))
+        ImageDraw.Draw(margin_11).rectangle((11, 11, 68, 68), fill=(20, 80, 40, 255))
+        margin_11_path = root / "margin-11.png"
+        save_png(margin_11, margin_11_path)
+        margin_11_errors: list[str] = []
+        validate_png(margin_11_path, None, (80, 80), (370, 320), 12, margin_11_errors, [])
+        assert any("below required 12px" in message for message in margin_11_errors)
+
+        margin_12 = Image.new("RGBA", (80, 80), (0, 0, 0, 0))
+        ImageDraw.Draw(margin_12).rectangle((12, 12, 67, 67), fill=(20, 80, 40, 255))
+        margin_12_path = root / "margin-12.png"
+        save_png(margin_12, margin_12_path)
+        margin_12_errors: list[str] = []
+        margin_12_warnings: list[str] = []
+        validate_png(
+            margin_12_path, None, (80, 80), (370, 320), 12,
+            margin_12_errors, margin_12_warnings,
+        )
+        assert not margin_12_errors and margin_12_warnings
+        adjusted, was_adjusted = enforce_safe_margin(valid, required=12, target=16)
+        assert was_adjusted and adjusted.size == valid.size
 
         no_dpi_path = root / "no-dpi.png"
         valid.save(no_dpi_path, format="PNG")
@@ -1209,17 +1453,19 @@ def main() -> None:
             )
             (project / "SESSION.md").write_text(
                 "# SESSION\n\n"
-                "- schema_version: 3\n"
+                "- schema_version: 4\n"
                 f"- project: pack-{boundary_count}\n"
                 "- materials: received\n"
                 f"- count: {boundary_count}\n"
                 "- text: yes\n"
                 "- text_mode: font\n"
                 "- text_check: n/a\n"
+                "- text_mask_version: 0\n"
                 "- review_version: 1\n"
                 "- gate: P6\n",
                 encoding="utf-8",
             )
+            write_design_evidence_fixture(project)
             for index in range(1, boundary_count + 1):
                 stamp = Image.new("RGBA", (100, 100), (0, 0, 0, 0))
                 ImageDraw.Draw(stamp).rectangle(
@@ -1254,17 +1500,31 @@ def main() -> None:
         (project.parent / "ACTIVE").write_text("pack\n", encoding="utf-8")
         (project / "SESSION.md").write_text(
             "# SESSION\n\n"
-            "- schema_version: 3\n"
+            "- schema_version: 4\n"
             "- project: pack\n"
             "- materials: received\n"
             "- count: 8\n"
             "- text: yes\n"
             "- text_mode: font\n"
             "- text_check: n/a\n"
+            "- text_mask_version: 0\n"
             "- review_version: 1\n"
             "- gate: P6\n",
             encoding="utf-8",
         )
+        write_design_evidence_fixture(project)
+        font_session = (project / "SESSION.md").read_text(encoding="utf-8")
+        (project / "SESSION.md").write_text(
+            font_session.replace("- text_mask_version: 0", "- text_mask_version: 2"),
+            encoding="utf-8",
+        )
+        try:
+            load_static_session(project, {"P6"})
+        except ValueError as exc:
+            assert "requires text_mask_version=0" in str(exc)
+        else:
+            raise AssertionError("font text mode accepted stale AI text masks")
+        (project / "SESSION.md").write_text(font_session, encoding="utf-8")
         for index in range(1, 9):
             stamp = Image.new("RGBA", (100, 100), (0, 0, 0, 0))
             ImageDraw.Draw(stamp).rectangle(
@@ -1500,6 +1760,12 @@ def main() -> None:
     assert outlined_ring.size == (60, 60)
     assert outlined_ring.getpixel((29, 29))[3] == 0, "white outline filled a text counter"
     assert outlined_ring.getpixel((9, 30))[3] > 0, "white outline was not added outside the shape"
+    assert text_region({"text_region": [8, 8, 32, 32]}, (40, 40), 1) == (8, 8, 32, 32)
+    protected = Image.new("L", (40, 40), 0)
+    ImageDraw.Draw(protected).rectangle((14, 14, 25, 25), fill=255)
+    unprotected = Image.new("L", (40, 40), 0)
+    assert not internal_hole_sizes_outside_mask(text_like_ring, protected)
+    assert internal_hole_sizes_outside_mask(text_like_ring, unprotected)
 
     antialiased = Image.new("RGBA", (3, 3), (0, 0, 0, 0))
     antialiased.putpixel((1, 1), (20, 80, 40, 128))

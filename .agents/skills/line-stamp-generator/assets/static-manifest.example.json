@@ -4,7 +4,8 @@
     "canvas": [370, 320],
     "font": "fonts/NotoSansJP-Bold.ttf",
     "text_zone_height": 90,
-    "margin": 10,
+    "margin": 16,
+    "safe_margin": 16,
     "text_fill": "#FFE57C",
     "text_outline": "#084E2B",
     "outline_width": 5,
@@ -19,7 +20,8 @@
     {
       "id": 1,
       "character": "characters/stamp01.png",
-      "text": ["おはよう"]
+      "text": ["おはよう"],
+      "text_region": [24, 12, 346, 102]
     }
   ]
 }

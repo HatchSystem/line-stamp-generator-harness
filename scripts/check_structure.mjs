@@ -24,12 +24,25 @@ const PACKAGER_IMPLEMENTATION = `${SKILL_SCRIPT_DIRECTORY}/package_static.py`;
 const PREPROCESS_IMPLEMENTATION = `${SKILL_SCRIPT_DIRECTORY}/preprocess_character.py`;
 const TRANSACTION_IMPLEMENTATION = `${SKILL_SCRIPT_DIRECTORY}/transaction_utils.py`;
 const VERIFY_TEXT_IMPLEMENTATION = `${SKILL_SCRIPT_DIRECTORY}/verify_text.py`;
+const TEXT_EVIDENCE_IMPLEMENTATION = `${SKILL_SCRIPT_DIRECTORY}/text_evidence.py`;
 const SESSION_CONTRACT_IMPLEMENTATION = `${SKILL_SCRIPT_DIRECTORY}/session_contract.py`;
 const METADATA_IMPLEMENTATION = `${SKILL_SCRIPT_DIRECTORY}/metadata_utils.py`;
 const PROJECT_CONTEXT_IMPLEMENTATION = `${SKILL_SCRIPT_DIRECTORY}/project_context.py`;
 const PYTHON_SELF_TEST = `${SKILL_SCRIPT_DIRECTORY}/self_test.py`;
 const SUBMISSION_EXAMPLE = ".agents/skills/line-stamp-generator/assets/submission.example.json";
-const EXPECTED_PROJECT_ACTIONS = ["confirm-p0", "list", "migrate", "new", "status", "use"];
+const EXPECTED_PROJECT_ACTIONS = [
+  "complete-production",
+  "confirm-account",
+  "confirm-design",
+  "confirm-p0",
+  "confirm-three-view",
+  "list",
+  "migrate",
+  "new",
+  "record-learning",
+  "status",
+  "use",
+];
 const PROJECT_COMMAND_DOCS = [
   "README.md",
   ".agents/skills/line-stamp-generator/references/commands.md",
@@ -38,7 +51,8 @@ const SCHEMA_GUIDE_DOCS = [
   ".agents/skills/line-stamp-generator/references/application.md",
   ".agents/skills/line-stamp-generator/references/gates.md",
 ];
-const CURRENT_SCHEMA_VERSION = 3;
+const CURRENT_SESSION_SCHEMA_VERSION = 4;
+const CURRENT_SUBMISSION_SCHEMA_VERSION = 3;
 const EXPECTED_FACADE_COMMANDS = new Map([
   ["check-publish-ready", "check_publish_ready.py"],
   ["compose-static", "compose_static.py"],
@@ -1187,12 +1201,12 @@ function validateSchemaVersionPolicy() {
     `project argparse アクションが不正です: expected=${[...EXPECTED_PROJECT_ACTIONS].sort().join(",")} actual=${[...new Set(actions)].sort().join(",")}`,
   );
   check(
-    new RegExp(`^SESSION_SCHEMA_VERSION\\s*=\\s*${CURRENT_SCHEMA_VERSION}\\s*$`, "m").test(projectText) &&
-      new RegExp(`^SUBMISSION_SCHEMA_VERSION\\s*=\\s*${CURRENT_SCHEMA_VERSION}\\s*$`, "m").test(projectText),
+    new RegExp(`^SESSION_SCHEMA_VERSION\\s*=\\s*${CURRENT_SESSION_SCHEMA_VERSION}\\s*$`, "m").test(projectText) &&
+      new RegExp(`^SUBMISSION_SCHEMA_VERSION\\s*=\\s*${CURRENT_SUBMISSION_SCHEMA_VERSION}\\s*$`, "m").test(projectText),
     "PROJECT_SCHEMA_CONSTANTS",
     PROJECT_IMPLEMENTATION,
     0,
-    `SESSION と submission の現行 schema_version は ${CURRENT_SCHEMA_VERSION} である必要があります`,
+    `SESSION schema_version=${CURRENT_SESSION_SCHEMA_VERSION}、submission schema_version=${CURRENT_SUBMISSION_SCHEMA_VERSION} である必要があります`,
   );
   check(
     /f["']- schema_version:\s*\{SESSION_SCHEMA_VERSION\}["']/.test(projectText),
@@ -1216,25 +1230,25 @@ function validateSchemaVersionPolicy() {
   if (check(fs.existsSync(absolute(PUBLISH_CHECK_IMPLEMENTATION)), "PUBLISH_CHECK", PUBLISH_CHECK_IMPLEMENTATION, 0, "公開前検査の実装がありません")) {
     const publishText = readText(PUBLISH_CHECK_IMPLEMENTATION);
     check(
-      new RegExp(`^SESSION_SCHEMA_VERSION\\s*=\\s*["']${CURRENT_SCHEMA_VERSION}["']\\s*$`, "m").test(publishText) &&
-        new RegExp(`^SUBMISSION_SCHEMA_VERSION\\s*=\\s*${CURRENT_SCHEMA_VERSION}\\s*$`, "m").test(publishText) &&
+      new RegExp(`^SESSION_SCHEMA_VERSION\\s*=\\s*["']${CURRENT_SESSION_SCHEMA_VERSION}["']\\s*$`, "m").test(publishText) &&
+        new RegExp(`^SUBMISSION_SCHEMA_VERSION\\s*=\\s*${CURRENT_SUBMISSION_SCHEMA_VERSION}\\s*$`, "m").test(publishText) &&
         /session\.get\(\s*["']schema_version["']\s*\)\s*!=\s*SESSION_SCHEMA_VERSION/.test(publishText) &&
         /meta\.get\(\s*["']schema_version["']\s*\)\s*!=\s*SUBMISSION_SCHEMA_VERSION/.test(publishText),
       "PUBLISH_SCHEMA_ENFORCEMENT",
       PUBLISH_CHECK_IMPLEMENTATION,
       0,
-      `check-publish-ready は SESSION と submission の schema_version ${CURRENT_SCHEMA_VERSION} を検査してください`,
+      `check-publish-ready は SESSION=${CURRENT_SESSION_SCHEMA_VERSION} と submission=${CURRENT_SUBMISSION_SCHEMA_VERSION} を検査してください`,
     );
   }
 
   if (check(fs.existsSync(absolute(SUBMISSION_EXAMPLE)), "SUBMISSION_EXAMPLE", SUBMISSION_EXAMPLE, 0, "submission の正本例がありません")) {
     const example = parseJson(SUBMISSION_EXAMPLE);
     check(
-      objectValue(example)?.schema_version === CURRENT_SCHEMA_VERSION,
+      objectValue(example)?.schema_version === CURRENT_SUBMISSION_SCHEMA_VERSION,
       "SUBMISSION_EXAMPLE_SCHEMA",
       SUBMISSION_EXAMPLE,
       0,
-      `submission.example.json の schema_version は整数 ${CURRENT_SCHEMA_VERSION} である必要があります`,
+      `submission.example.json の schema_version は整数 ${CURRENT_SUBMISSION_SCHEMA_VERSION} である必要があります`,
     );
   }
 
@@ -1242,12 +1256,12 @@ function validateSchemaVersionPolicy() {
     if (!check(fs.existsSync(absolute(file)), "SCHEMA_GUIDE", file, 0, "schema migration の説明文書がありません")) continue;
     const text = readText(file);
     check(
-      new RegExp(`schema_version[^\\n]*\`?${CURRENT_SCHEMA_VERSION}\`?`).test(text) &&
+      new RegExp(`schema_version[^\\n]*\`?(?:${CURRENT_SESSION_SCHEMA_VERSION}|${CURRENT_SUBMISSION_SCHEMA_VERSION})\`?`).test(text) &&
         /project\s+--root\s+\.\s+migrate/.test(text),
       "SCHEMA_GUIDE_CURRENT",
       file,
       0,
-      `schema_version ${CURRENT_SCHEMA_VERSION} と公開 CLI の project --root . migrate を説明してください`,
+      `現行 schema_version と公開 CLI の project --root . migrate を説明してください`,
     );
   }
 
@@ -1256,12 +1270,12 @@ function validateSchemaVersionPolicy() {
     check(
       /cmd_migrate\(Namespace\(root=str\(root\), apply=False\)\)/.test(selfTest) &&
         /cmd_migrate\(Namespace\(root=str\(root\), apply=True\)\)/.test(selfTest) &&
-        new RegExp(`["']schema_version["']\\]\\s*==\\s*["']${CURRENT_SCHEMA_VERSION}["']`).test(selfTest) &&
-        new RegExp(`["']schema_version["']\\]\\s*==\\s*${CURRENT_SCHEMA_VERSION}\\b`).test(selfTest),
+        new RegExp(`["']schema_version["']\\]\\s*==\\s*["']${CURRENT_SESSION_SCHEMA_VERSION}["']`).test(selfTest) &&
+        new RegExp(`["']schema_version["']\\]\\s*==\\s*${CURRENT_SUBMISSION_SCHEMA_VERSION}\\b`).test(selfTest),
       "PYTHON_MIGRATE_TEST",
       PYTHON_SELF_TEST,
       0,
-      `自己テストは migrate の dry-run/apply と SESSION/submission schema v${CURRENT_SCHEMA_VERSION} を検証してください`,
+      `自己テストは migrate と SESSION v${CURRENT_SESSION_SCHEMA_VERSION}/submission v${CURRENT_SUBMISSION_SCHEMA_VERSION} を検証してください`,
     );
   }
 }
@@ -1269,6 +1283,34 @@ function validateSchemaVersionPolicy() {
 
 function validateWorkflowContracts() {
   const projectText = readText(PROJECT_IMPLEMENTATION);
+  const activeFlowFiles = [
+    "AGENTS.md",
+    ".agents/skills/line-stamp-generator/SKILL.md",
+    ".agents/skills/line-stamp-generator/references/gates.md",
+    ".agents/skills/line-stamp-generator/references/dialogue.md",
+    ".agents/skills/line-stamp-generator/references/publish.md",
+    ".agents/roles/publisher.md",
+  ];
+  for (const file of activeFlowFiles) {
+    const text = readText(file);
+    check(
+      !/^\s*(?:\|\s*P9\s*\||##\s+P9\b|10\.\s+P9\b)/m.test(text),
+      "P9_REMOVED_FROM_ACTIVE_FLOW",
+      file,
+      0,
+      "現行制作フローにP9のゲート・手順・節を定義しないでください",
+    );
+  }
+  const agentsText = readText("AGENTS.md");
+  check(
+    /P.*Phase（制作フェーズ）/.test(agentsText) &&
+      /承認\s*\/\s*修正（箇所）/.test(agentsText) &&
+      /制作が完了しました。問題なければ審査リクエストを実施してください。/.test(agentsText),
+    "PHASE_DIALOGUE_COMPLETION",
+    "AGENTS.md",
+    0,
+    "Pの定義、明確な承認形式、P8の定型完了文を共通規約へ明記してください",
+  );
   check(
     /^def\s+cmd_confirm_p0\s*\(/m.test(projectText) &&
       /p_confirm\.set_defaults\(\s*func\s*=\s*cmd_confirm_p0\s*\)/.test(projectText) &&
@@ -1338,6 +1380,42 @@ function validateWorkflowContracts() {
     0,
     "confirm-p0 は active project の refs/ に通常ファイルがあることを確認してください",
   );
+  check(
+    /^def\s+cmd_confirm_design\s*\(/m.test(projectText) &&
+      /^def\s+cmd_confirm_three_view\s*\(/m.test(projectText) &&
+      /design_version/.test(projectText) &&
+      /design_evidence/.test(projectText) &&
+      /three_view_version/.test(projectText) &&
+      /head_ratio/.test(projectText) &&
+      /background["']\s*:\s*["']transparent/.test(projectText),
+    "VERSIONED_DESIGN_CONTRACT",
+    PROJECT_IMPLEMENTATION,
+    0,
+    "P1/P2 はチェックリスト、画像、参照元を版付き証跡へ固定してください",
+  );
+  check(
+    /LEARNINGS_TEMPLATE/.test(projectText) &&
+      /staging\s*\/\s*["']LEARNINGS\.md["']/.test(projectText) &&
+      /^def\s+cmd_record_learning\s*\(/m.test(projectText) &&
+      /create project LEARNINGS\.md/.test(projectText),
+    "PROJECT_LEARNING_RECORD",
+    PROJECT_IMPLEMENTATION,
+    0,
+    "新規・移行プロジェクトはLEARNINGS.mdを持ち、公開CLIで追記できる必要があります",
+  );
+  check(
+    /^def\s+cmd_confirm_account\s*\(/m.test(projectText) &&
+      /^def\s+cmd_complete_production\s*\(/m.test(projectText) &&
+      /account_name/.test(projectText) &&
+      /seller_id/.test(projectText) &&
+      /registration_target/.test(projectText) &&
+      /submission["']\s*:\s*["']production-complete/.test(projectText) &&
+      /制作が完了しました。問題なければ審査リクエストを実施してください。/.test(projectText),
+    "P8_PRODUCTION_COMPLETION",
+    PROJECT_IMPLEMENTATION,
+    0,
+    "P8はアカウント同一性を保存し、登録入力後に定型文で制作完了してください",
+  );
 
   check(
     /candidate\s*=\s*harness\s*\/\s*["']projects["']/.test(projectText) &&
@@ -1394,7 +1472,7 @@ function validateWorkflowContracts() {
       /DEPRECATED_SESSION_KEYS/.test(sessionText) &&
       /SESSION contains deprecated fields/.test(sessionText) &&
       /text_mode\s*==\s*["']ai["']/.test(sessionText) &&
-      /require_complete_text_evidence\(project_dir,\s*count\)/.test(sessionText),
+      /require_complete_text_evidence\(project_dir,\s*count,\s*int\(mask_value\)\)/.test(sessionText),
     "STATIC_SESSION_CONTRACT",
     SESSION_CONTRACT_IMPLEMENTATION,
     0,
@@ -1419,6 +1497,15 @@ function validateWorkflowContracts() {
     SESSION_CONTRACT_IMPLEMENTATION,
     0,
     "P6 の AI 文字承認は P5 全点 report と現行 manifest・stamp の SHA-256 に結び付けてください",
+  );
+  check(
+    /^def\s+require_design_evidence\s*\(/m.test(sessionText) &&
+      /^def\s+require_three_view_evidence\s*\(/m.test(sessionText) &&
+      /require_three_view_evidence\(project_dir,\s*values\)/.test(sessionText),
+    "STATIC_DESIGN_EVIDENCE",
+    SESSION_CONTRACT_IMPLEMENTATION,
+    0,
+    "P4以降は現在のP1/P2版付き証跡を検証してください",
   );
 
   const publishText = readText(PUBLISH_CHECK_IMPLEMENTATION);
@@ -1504,7 +1591,7 @@ function validateWorkflowContracts() {
     "AI provenance は自己参照・偽の inline note を拒否し、AI文字利用時は text scope を要求してください",
   );
   check(
-    /require_complete_text_evidence\(project_dir,\s*evidence_count\)/.test(publishText),
+    /require_complete_text_evidence\(\s*project_dir,\s*evidence_count,\s*int\(mask_value\)\s*\)/.test(publishText),
     "PUBLISH_TEXT_EVIDENCE",
     PUBLISH_CHECK_IMPLEMENTATION,
     0,
@@ -1535,6 +1622,7 @@ function validateWorkflowContracts() {
   );
 
   const validatorText = readText(PACK_VALIDATOR_IMPLEMENTATION);
+  const composeText = readText(COMPOSE_IMPLEMENTATION);
   check(
     validatorText.includes("stamp_minimum = (80, 80)") &&
       validatorText.includes("stamp_limit = (370, 320)") &&
@@ -1572,6 +1660,25 @@ function validateWorkflowContracts() {
     PACK_VALIDATOR_IMPLEMENTATION,
     0,
     "透明背景は内部の透明ピンホールではなく、キャンバス境界へ到達する透明領域で確認してください",
+  );
+  check(
+    /default=12/.test(validatorText) &&
+      /below required \{min_margin\}px/.test(validatorText) &&
+      /below 16px target/.test(validatorText) &&
+      /enforce_safe_margin\(/.test(composeText),
+    "PACK_SAFE_MARGIN",
+    PACK_VALIDATOR_IMPLEMENTATION,
+    0,
+    "最終スタンプは12px以上・目標16pxの安全余白を自動調整・検証してください",
+  );
+  check(
+    /internal_hole_sizes_outside_mask/.test(validatorText) &&
+      /text_mask_version/.test(validatorText) &&
+      !/micro-hole check skipped/.test(validatorText),
+    "AI_TEXT_MASK_HOLES",
+    PACK_VALIDATOR_IMPLEMENTATION,
+    0,
+    "AI文字でも文字領域マスク外の微小穴検査を省略しないでください",
   );
   check(
     /stat\.S_IFMT\(info\.external_attr\s*>>\s*16\)/.test(validatorText) &&
@@ -1632,7 +1739,6 @@ function validateWorkflowContracts() {
     "パッケージングは同一filesystemでstagingし、予約名を拒否してZIPを最後に置換してください",
   );
 
-  const composeText = readText(COMPOSE_IMPLEMENTATION);
   check(
     /^def\s+text_layer_output\s*\(/m.test(composeText) &&
       /text_mode\s*==\s*["']font["']/.test(composeText) &&
@@ -1679,26 +1785,29 @@ function validateWorkflowContracts() {
       /with\s+exclusive_lock\(/.test(contactText) &&
       /write_review_pair\(output,\s*payload,\s*evidence_payload\)/.test(contactText) &&
       /same project's review/.test(contactText) &&
-      /load_static_session\(project_dir,\s*\{["']P5["']\}\)/.test(contactText),
+      /load_static_session\(project_dir,\s*\{["']P5["']\}\)/.test(contactText) &&
+      /["']presentation["']\s*:\s*["']all-stamps-light-dark["']/.test(contactText),
     "CONTACT_SHEET_APPEND_ONLY",
     CONTACT_SHEET_IMPLEMENTATION,
     0,
     "確認一覧は同一projectの版付き未使用名へ排他的に作成してください",
   );
 
-  const verifyText = readText(VERIFY_TEXT_IMPLEMENTATION);
+  const verifyText = readText(TEXT_EVIDENCE_IMPLEMENTATION);
   check(
-    /write_report_pair\(/.test(verifyText) &&
+    /write_new_files\(/.test(verifyText) &&
       /path\.open\(["']xb["']\)/.test(verifyText) &&
       /["']--review-dir["']\s*,\s*required=True/.test(verifyText) &&
-      /return\s+1\s+if\s+mismatches\s+or\s+near\s+else\s+0/.test(verifyText) &&
+      /return\s+1\s+if\s+counts\["near"\]\s+or\s+counts\["mismatch"\]\s+else\s+0/.test(verifyText) &&
       /load_static_session\(project_dir,\s*\{["']P4["']\s*,\s*["']P5["']\}\)/.test(verifyText) &&
       /manifest_sha256/.test(verifyText) &&
-      /["']scope["']\s*:\s*scope/.test(verifyText),
+      /["']scope["']\s*:\s*scope/.test(verifyText) &&
+      /--vision-evidence/.test(verifyText) &&
+      /text-masks/.test(verifyText),
     "VERIFY_TEXT_EVIDENCE",
-    VERIFY_TEXT_IMPLEMENTATION,
+    TEXT_EVIDENCE_IMPLEMENTATION,
     0,
-    "AI文字検査はnearを成功扱いせず、同一projectへ版付き証跡を排他的に保存してください",
+    "AI文字検査は自動経路と文字マスクを持ち、nearを成功扱いせず版付き保存してください",
   );
 
   check(

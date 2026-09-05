@@ -9,6 +9,11 @@ Public entry point (run from the repository root):
   python scripts/line_stamp.py project --root . list [--json]
   python scripts/line_stamp.py project --root . new --slug SLUG
   python scripts/line_stamp.py project --root . confirm-p0 --source photo|character ...
+  python scripts/line_stamp.py project --root . confirm-design --image refs/design-v01.png ...
+  python scripts/line_stamp.py project --root . confirm-three-view --image refs/three-view-v01.png
+  python scripts/line_stamp.py project --root . record-learning --gate P5 --kind problem ...
+  python scripts/line_stamp.py project --root . confirm-account --account-name NAME ...
+  python scripts/line_stamp.py project --root . complete-production
   python scripts/line_stamp.py project --root . use SLUG
   python scripts/line_stamp.py project --root . status [--json]
   python scripts/line_stamp.py project --root . migrate [--apply]
@@ -16,6 +21,7 @@ Public entry point (run from the repository root):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -25,7 +31,10 @@ import tempfile
 from datetime import date, datetime
 from pathlib import Path
 
+from PIL import Image
+
 from metadata_utils import DuplicateKeyError, loads_no_duplicates
+from session_contract import require_design_evidence, sha256_file
 from transaction_utils import LockUnavailableError, exclusive_lock
 
 ALLOWED_COUNTS = (8, 16, 24, 32, 40)
@@ -39,11 +48,35 @@ WINDOWS_RESERVED_NAMES = {
     *(f"COM{index}" for index in range(1, 10)),
     *(f"LPT{index}" for index in range(1, 10)),
 }
-PROJECT_DIRS = ("refs", "raw", "characters", "character-layers", "text-layers", "fonts", "stamps", "review", "submit", "meta")
-DONE_STATES = {"released", "local-complete"}
-SESSION_SCHEMA_VERSION = 3
+PROJECT_DIRS = (
+    "refs",
+    "raw",
+    "characters",
+    "character-layers",
+    "text-layers",
+    "text-masks",
+    "fonts",
+    "stamps",
+    "review",
+    "submit",
+    "meta",
+)
+DONE_STATES = {"production-complete", "local-complete"}
+SESSION_SCHEMA_VERSION = 4
 SUBMISSION_SCHEMA_VERSION = 3
 DEPRECATED_SESSION_KEYS = frozenset({"adult", "consent", "rights"})
+PRODUCTION_COMPLETE_MESSAGE = (
+    "制作が完了しました。問題なければ審査リクエストを実施してください。"
+)
+LEARNING_KINDS = {"problem", "lesson"}
+LEARNINGS_TEMPLATE = """# Project learnings
+
+制作中に判明した問題と再利用可能な教訓だけを追記する。個人情報、素材の内容、
+パスワード、認証コード、Cookie、APIキーなどの秘密情報は記録しない。
+
+## Entries
+
+"""
 
 
 class ProjectPathError(RuntimeError):
@@ -119,6 +152,7 @@ def session_text(slug: str) -> str:
             "- text: unknown",
             "- text_mode: unknown",
             "- text_check: n/a",
+            "- text_mask_version: 0",
             "- gate: P0",
             "- character: pending",
             "- publish: unknown",
@@ -129,6 +163,13 @@ def session_text(slug: str) -> str:
             "- review_version: 0",
             "- validation: not-run",
             "- submission: not-started",
+            "- design_version: 0",
+            "- design_evidence: pending",
+            "- three_view_version: 0",
+            "- account_name: pending",
+            "- seller_id: pending",
+            "- registration_target: pending",
+            "- account_confirmed_at: pending",
             f"- notes: created {date.today().isoformat()}",
             "",
         ]
@@ -160,6 +201,7 @@ def p0_updates(args: argparse.Namespace) -> tuple[dict[str, str], list[str]]:
         "text": args.text,
         "text_mode": args.text_mode,
         "text_check": text_check,
+        "text_mask_version": "0",
         "gate": "P1",
         "character": character,
         "publish": args.publish,
@@ -218,7 +260,7 @@ def session_migration_updates(
     *,
     materials_available: bool | None = None,
 ) -> tuple[dict[str, str], list[str]]:
-    """Return meaning-preserving legacy -> v3 SESSION updates without writing files."""
+    """Return meaning-preserving legacy -> v4 SESSION updates without writing files."""
     errors: list[str] = []
     raw_version = values.get("schema_version", "1")
     try:
@@ -237,7 +279,14 @@ def session_migration_updates(
 
     updates: dict[str, str] = {}
     gate = values.get("gate", "")
-    post_p0 = re.fullmatch(r"P[1-9]", gate) is not None
+    allowed_gates = {f"P{index}" for index in range(0, 9)}
+    if version <= 3:
+        allowed_gates.add("P9")
+    if gate not in allowed_gates:
+        return {}, [f"SESSION gate={gate!r} is unsupported for schema v{version}"]
+    post_p0 = re.fullmatch(r"P[1-8]", gate) is not None or (
+        version <= 3 and gate == "P9"
+    )
     materials = values.get("materials")
     if materials is None:
         if version != 1:
@@ -279,6 +328,72 @@ def session_migration_updates(
         updates["schema_version"] = str(SESSION_SCHEMA_VERSION)
     if publish in {"no", "private"}:
         updates["publish"] = "local-only"
+    if version <= 3:
+        for key, value in {
+            "design_version": "0",
+            "design_evidence": "pending",
+            "three_view_version": "0",
+            "account_name": "pending",
+            "seller_id": "pending",
+            "registration_target": "pending",
+            "account_confirmed_at": "pending",
+            "text_mask_version": "0",
+        }.items():
+            if key not in values:
+                updates[key] = value
+        legacy_submission = values.get("submission", "not-started")
+        allowed_legacy_submission = {
+            "not-started",
+            "local-complete",
+            "drafted",
+            "requested",
+            "approved",
+            "rejected",
+            "released",
+        }
+        if legacy_submission not in allowed_legacy_submission:
+            errors.append(
+                f"legacy SESSION submission={legacy_submission!r} is unsupported"
+            )
+        elif legacy_submission in {"requested", "approved", "rejected", "released"}:
+            updates["submission"] = "production-complete"
+            legacy_note = f"pre-v4 submission status was {legacy_submission}"
+            existing_notes = values.get("notes", "").strip()
+            updates["notes"] = (
+                f"{existing_notes}; {legacy_note}" if existing_notes else legacy_note
+            )
+        elif "submission" not in values:
+            updates["submission"] = "not-started"
+        if gate == "P9":
+            updates["gate"] = "P8"
+    else:
+        allowed_submission = {
+            "not-started",
+            "local-complete",
+            "drafted",
+            "production-complete",
+        }
+        if values.get("submission") not in allowed_submission:
+            errors.append(
+                f"SESSION submission={values.get('submission')!r} is unsupported for schema v4"
+            )
+    effective = {**values, **updates}
+    for key in (
+        "design_version",
+        "design_evidence",
+        "three_view_version",
+        "account_name",
+        "seller_id",
+        "registration_target",
+        "account_confirmed_at",
+        "text_mask_version",
+        "submission",
+    ):
+        if key not in effective or not effective[key]:
+            errors.append(f"SESSION schema v4 requires field {key}")
+    for key in ("design_version", "three_view_version", "text_mask_version"):
+        if key in effective and re.fullmatch(r"[0-9]{1,9}", effective[key]) is None:
+            errors.append(f"SESSION {key} must be a nonnegative integer")
     return updates, errors
 
 
@@ -531,6 +646,10 @@ def cmd_new(args: argparse.Namespace) -> int:
             "# Plan\n\nP3で承認されたセリフ・表情・ポーズを記録する。\n",
             encoding="utf-8",
         )
+        (staging / "LEARNINGS.md").write_text(
+            LEARNINGS_TEMPLATE,
+            encoding="utf-8",
+        )
         os.replace(staging, project)
         installed = True
         atomic_write_text(active_file(args.root), args.slug + "\n")
@@ -691,6 +810,421 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def active_session(args: argparse.Namespace) -> tuple[str, Path, Path, str, dict[str, str]]:
+    """Return the selected project's stable SESSION snapshot for state commands."""
+    slug = read_active(args.root)
+    if not slug or not valid_slug(slug):
+        raise ProjectPathError("select a valid active project before changing project state")
+    project = project_directory(args.root, slug)
+    session_path = project_file(project, "SESSION.md")
+    if not session_path.is_file():
+        raise ProjectPathError(f"active project {slug!r} has no SESSION.md")
+    source = session_path.read_text(encoding="utf-8")
+    values, errors = parse_session_for_migration(source)
+    if errors:
+        raise ProjectPathError("; ".join(errors))
+    if values.get("project") != slug:
+        raise ProjectPathError(
+            f"SESSION project={values.get('project')!r} does not match ACTIVE={slug!r}"
+        )
+    if values.get("schema_version") != str(SESSION_SCHEMA_VERSION):
+        raise ProjectPathError(
+            f"SESSION schema_version must be {SESSION_SCHEMA_VERSION}; run project migrate first"
+        )
+    return slug, project, session_path, source, values
+
+
+def checked_record_value(label: str, value: str, *, max_length: int = 1000) -> str:
+    """Keep project records single-line and free of common credential material."""
+    cleaned = value.strip()
+    if not cleaned or len(cleaned) > max_length or any(char in cleaned for char in "\r\n"):
+        raise ValueError(f"{label} must be one non-empty line of at most {max_length} characters")
+    folded = cleaned.casefold()
+    forbidden = (
+        "password",
+        "passwd",
+        "api key",
+        "api_key",
+        "access token",
+        "cookie",
+        "パスワード",
+        "認証コード",
+        "秘密鍵",
+    )
+    if any(token in folded for token in forbidden):
+        raise ValueError(f"{label} appears to contain credential or secret material")
+    return cleaned
+
+
+def notes_with_event(values: dict[str, str], event: str) -> str:
+    existing = values.get("notes", "").strip()
+    return f"{existing}; {event}" if existing else event
+
+
+def sha256_path(path: Path) -> str:
+    return sha256_file(path)
+
+
+def checked_ref_file(project: Path, value: str, label: str) -> Path:
+    if (project / "refs").is_symlink():
+        raise ValueError("project refs/ must not be a symlink")
+    raw = Path(value)
+    if raw.is_absolute() or raw.parts[:1] != ("refs",):
+        raise ValueError(f"{label} must be a project-relative path under refs/")
+    path = project_file(project, raw.as_posix())
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"{label} must be a regular non-symlink file: {value}")
+    return path
+
+
+def require_png_file(path: Path, label: str) -> None:
+    try:
+        with Image.open(path) as opened:
+            opened.load()
+            if opened.format != "PNG" or opened.width <= 0 or opened.height <= 0:
+                raise ValueError(f"{label} must be a non-empty PNG image")
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"{label} is not a readable PNG image: {exc}") from exc
+
+
+def require_reference_image(path: Path) -> None:
+    try:
+        with Image.open(path) as opened:
+            opened.load()
+            if opened.width <= 0 or opened.height <= 0:
+                raise ValueError("reference image is empty")
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"reference is not a readable image: {path.name}: {exc}") from exc
+
+
+def next_versioned_ref(project: Path, prefix: str, suffix: str) -> int:
+    pattern = re.compile(rf"{re.escape(prefix)}-v([0-9]{{2,}}){re.escape(suffix)}")
+    versions = [
+        int(match.group(1))
+        for path in (project / "refs").glob(f"{prefix}-v*{suffix}")
+        if (match := pattern.fullmatch(path.name))
+    ]
+    return max(versions, default=0) + 1
+
+
+def write_new_text_files(files: list[tuple[Path, str]]) -> None:
+    created: list[Path] = []
+    try:
+        for path, content in files:
+            with path.open("x", encoding="utf-8", newline="\n") as destination:
+                destination.write(content)
+            created.append(path)
+    except BaseException:
+        for path in reversed(created):
+            try:
+                if path.is_file() and not path.is_symlink():
+                    path.unlink()
+            except OSError:
+                pass
+        raise
+
+
+def cmd_confirm_design(args: argparse.Namespace) -> int:
+    """Create an immutable P1 design contract and invalidate downstream approvals."""
+    created: list[Path] = []
+    try:
+        slug, project, session_path, session_source, values = active_session(args)
+        if values.get("gate") not in {f"P{index}" for index in range(1, 9)}:
+            raise ValueError("design confirmation requires an active Phase P1 through P8")
+        version = next_versioned_ref(project, "design", ".json")
+        image = checked_ref_file(project, args.image, "design image")
+        require_png_file(image, "design image")
+        expected_image = project / "refs" / f"design-v{version:02d}.png"
+        if image != expected_image.resolve():
+            raise ValueError(
+                f"design image must use the next versioned name refs/{expected_image.name}"
+            )
+        references = [
+            checked_ref_file(project, value, "reference") for value in args.reference
+        ]
+        if len(references) != len(set(references)):
+            raise ValueError("reference inputs must not contain duplicates")
+        if image in references:
+            raise ValueError("reference inputs must not use the generated design image itself")
+        for reference in references:
+            require_reference_image(reference)
+        fields = {
+            "髪形": checked_record_value("hairstyle", args.hairstyle, max_length=500),
+            "服装": checked_record_value("clothing", args.clothing, max_length=500),
+            "目": checked_record_value("eyes", args.eyes, max_length=500),
+            "固定装飾": checked_record_value("accessories", args.accessories, max_length=500),
+        }
+        if not 1.0 <= args.head_ratio <= 5.0:
+            raise ValueError("head-ratio must be from 1.0 through 5.0")
+        colors = [value.upper() for value in args.color]
+        if not colors or any(re.fullmatch(r"#[0-9A-F]{6}", value) is None for value in colors):
+            raise ValueError("each --color must be a six-digit HEX value such as #1A2B3C")
+        if len(colors) != len(set(colors)) or len(colors) > 12:
+            raise ValueError("use 1-12 distinct --color values")
+        spec_path = project / "refs" / f"design-v{version:02d}.md"
+        evidence_path = project / "refs" / f"design-v{version:02d}.json"
+        spec_text = "\n".join(
+            [
+                f"# Design v{version:02d}",
+                "",
+                f"- 髪形: {fields['髪形']}",
+                f"- 頭身: {args.head_ratio:g}",
+                f"- 服装: {fields['服装']}",
+                f"- 配色: {', '.join(colors)}",
+                f"- 目: {fields['目']}",
+                f"- 固定装飾: {fields['固定装飾']}",
+                "- 背景: transparent",
+                f"- デザイン画像: refs/{image.name}",
+                "- 参考画像: " + ", ".join(f"refs/{path.name}" for path in references),
+                "",
+            ]
+        )
+        evidence = {
+            "schema_version": 1,
+            "version": version,
+            "project": slug,
+            "gate": "P1",
+            "checklist": {
+                "hairstyle": fields["髪形"],
+                "head_ratio": args.head_ratio,
+                "clothing": fields["服装"],
+                "palette": colors,
+                "eyes": fields["目"],
+                "accessories": fields["固定装飾"],
+                "background": "transparent",
+            },
+            "design_file": f"refs/{image.name}",
+            "design_sha256": sha256_path(image),
+            "spec_file": f"refs/{spec_path.name}",
+            "spec_sha256": hashlib.sha256(spec_text.encode("utf-8")).hexdigest(),
+            "references": [
+                {"file": f"refs/{path.name}", "sha256": sha256_path(path)}
+                for path in references
+            ],
+        }
+        evidence_text = json.dumps(
+            evidence, ensure_ascii=False, indent=2, allow_nan=False
+        ) + "\n"
+        write_new_text_files([(spec_path, spec_text), (evidence_path, evidence_text)])
+        created.extend((spec_path, evidence_path))
+        updates = {
+            "gate": "P2",
+            "design_version": str(version),
+            "design_evidence": f"refs/{evidence_path.name}",
+            "lock": "approved",
+            "three_view": "pending",
+            "three_view_version": "0",
+            "sample": "not-started",
+            "review_version": "0",
+            "text_check": "not-run" if values.get("text_mode") == "ai" else "n/a",
+            "text_mask_version": "0",
+            "validation": "not-run",
+            "submission": "not-started",
+            "account_name": "pending",
+            "seller_id": "pending",
+            "registration_target": "pending",
+            "account_confirmed_at": "pending",
+            "notes": notes_with_event(values, f"P1 design v{version:02d} confirmed"),
+        }
+        atomic_write_text(session_path, update_session_text(session_source, updates))
+    except (OSError, UnicodeError, ValueError, ProjectPathError) as exc:
+        for path in reversed(created):
+            try:
+                if path.is_file() and not path.is_symlink():
+                    path.unlink()
+            except OSError:
+                pass
+        print(f"ERROR could not confirm P1 design: {exc}", file=sys.stderr)
+        return 1
+    print(f"P1 complete: design v{version:02d} approved for {slug}; next Phase is P2")
+    return 0
+
+
+def cmd_confirm_three_view(args: argparse.Namespace) -> int:
+    """Bind the approved P2 image to the exact P1 design evidence."""
+    created: list[Path] = []
+    try:
+        slug, project, session_path, session_source, values = active_session(args)
+        if values.get("gate") != "P2":
+            raise ValueError(f"three-view confirmation requires gate=P2 (found {values.get('gate')!r})")
+        design = require_design_evidence(project, values)
+        version = next_versioned_ref(project, "three-view", ".json")
+        image = checked_ref_file(project, args.image, "three-view image")
+        require_png_file(image, "three-view image")
+        expected_image = project / "refs" / f"three-view-v{version:02d}.png"
+        if image != expected_image.resolve():
+            raise ValueError(
+                f"three-view image must use the next versioned name refs/{expected_image.name}"
+            )
+        evidence_path = project / "refs" / f"three-view-v{version:02d}.json"
+        evidence = {
+            "schema_version": 1,
+            "version": version,
+            "project": slug,
+            "gate": "P2",
+            "three_view_file": f"refs/{image.name}",
+            "three_view_sha256": sha256_path(image),
+            "design_evidence": values["design_evidence"],
+            "design_evidence_sha256": sha256_path(design),
+        }
+        evidence_text = json.dumps(
+            evidence, ensure_ascii=False, indent=2, allow_nan=False
+        ) + "\n"
+        write_new_text_files([(evidence_path, evidence_text)])
+        created.append(evidence_path)
+        updates = {
+            "gate": "P3",
+            "three_view": "approved",
+            "three_view_version": str(version),
+            "notes": notes_with_event(values, f"P2 three-view v{version:02d} confirmed"),
+        }
+        atomic_write_text(session_path, update_session_text(session_source, updates))
+    except (OSError, UnicodeError, ValueError, ProjectPathError) as exc:
+        for path in reversed(created):
+            try:
+                if path.is_file() and not path.is_symlink():
+                    path.unlink()
+            except OSError:
+                pass
+        print(f"ERROR could not confirm P2 three-view: {exc}", file=sys.stderr)
+        return 1
+    print(f"P2 complete: three-view v{version:02d} approved for {slug}; next Phase is P3")
+    return 0
+
+
+def cmd_record_learning(args: argparse.Namespace) -> int:
+    """Append one structured production observation without overwriting prior entries."""
+    try:
+        slug, project, _, _, values = active_session(args)
+        if args.gate not in {f"P{index}" for index in range(0, 9)}:
+            raise ValueError("gate must be P0 through P8")
+        fields = {
+            "事象": checked_record_value("summary", args.summary),
+            "影響": checked_record_value("impact", args.impact),
+            "原因": checked_record_value("cause", args.cause),
+            "対処": checked_record_value("resolution", args.resolution),
+            "改善候補": checked_record_value("candidate", args.candidate),
+        }
+        if args.kind not in LEARNING_KINDS:
+            raise ValueError(f"kind must be one of {sorted(LEARNING_KINDS)}")
+        learning_path = project_file(project, "LEARNINGS.md")
+        if learning_path.is_symlink():
+            raise ValueError("LEARNINGS.md must not be a symlink")
+        if learning_path.exists():
+            source = learning_path.read_text(encoding="utf-8")
+            if not source.startswith("# Project learnings\n"):
+                raise ValueError("LEARNINGS.md does not use the canonical project template")
+        else:
+            source = LEARNINGS_TEMPLATE
+        timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+        block = [
+            f"### {timestamp} [{args.kind}] {fields['事象']}",
+            "",
+            f"- Phase: {args.gate}",
+            *(f"- {label}: {value}" for label, value in fields.items()),
+            "",
+        ]
+        atomic_write_text(learning_path, source.rstrip() + "\n\n" + "\n".join(block))
+    except (OSError, UnicodeError, ValueError, ProjectPathError) as exc:
+        print(f"ERROR could not record project learning: {exc}", file=sys.stderr)
+        return 1
+    print(f"RECORDED {slug} {args.gate} {args.kind} in {learning_path}")
+    return 0
+
+
+def cmd_confirm_account(args: argparse.Namespace) -> int:
+    """Persist the user-confirmed P8 account identity before any registration input."""
+    try:
+        slug, _, session_path, source, values = active_session(args)
+        required = {
+            "gate": "P8",
+            "publish": "yes",
+            "validation": "ok",
+            "submission": "drafted",
+        }
+        for key, expected in required.items():
+            if values.get(key) != expected:
+                raise ValueError(
+                    f"P8 account confirmation requires {key}={expected} "
+                    f"(found {values.get(key)!r})"
+                )
+        account_name = checked_record_value("account-name", args.account_name, max_length=200)
+        seller_id = checked_record_value("seller-id", args.seller_id, max_length=200)
+        target = checked_record_value(
+            "registration-target", args.registration_target, max_length=300
+        )
+        confirmed_at = datetime.now().astimezone().isoformat(timespec="seconds")
+        updates = {
+            "account_name": account_name,
+            "seller_id": seller_id,
+            "registration_target": target,
+            "account_confirmed_at": confirmed_at,
+            "notes": notes_with_event(values, f"P8 account confirmed {confirmed_at}"),
+        }
+        atomic_write_text(session_path, update_session_text(source, updates))
+    except (OSError, UnicodeError, ValueError, ProjectPathError) as exc:
+        print(f"ERROR could not confirm P8 account: {exc}", file=sys.stderr)
+        return 1
+    print(f"CONFIRMED P8 account for {slug}: {account_name} / {seller_id} / {target}")
+    return 0
+
+
+def cmd_complete_production(args: argparse.Namespace) -> int:
+    """Finish the reversible P8 workflow without tracking the review request."""
+    try:
+        _, _, session_path, source, values = active_session(args)
+        if values.get("submission") == "production-complete":
+            print(PRODUCTION_COMPLETE_MESSAGE)
+            return 0
+        required = {
+            "gate": "P8",
+            "publish": "yes",
+            "validation": "ok",
+            "submission": "drafted",
+        }
+        for key, expected in required.items():
+            if values.get(key) != expected:
+                raise ValueError(
+                    f"production completion requires {key}={expected} "
+                    f"(found {values.get(key)!r})"
+                )
+        for key in (
+            "account_name",
+            "seller_id",
+            "registration_target",
+            "account_confirmed_at",
+        ):
+            if values.get(key, "pending") in {"", "pending", "unknown"}:
+                raise ValueError(f"production completion requires confirmed SESSION {key}")
+        repeated_identity = {
+            "account_name": checked_record_value(
+                "account-name", args.account_name, max_length=200
+            ),
+            "seller_id": checked_record_value("seller-id", args.seller_id, max_length=200),
+            "registration_target": checked_record_value(
+                "registration-target", args.registration_target, max_length=300
+            ),
+        }
+        for key, value in repeated_identity.items():
+            if values.get(key) != value:
+                raise ValueError(
+                    f"current {key} does not match the user-confirmed P8 account record"
+                )
+        if not args.preview_confirmed:
+            raise ValueError("production completion requires --preview-confirmed")
+        completed_at = datetime.now().astimezone().isoformat(timespec="seconds")
+        updates = {
+            "submission": "production-complete",
+            "notes": notes_with_event(values, f"production completed {completed_at}"),
+        }
+        atomic_write_text(session_path, update_session_text(source, updates))
+    except (OSError, UnicodeError, ValueError, ProjectPathError) as exc:
+        print(f"ERROR could not complete production: {exc}", file=sys.stderr)
+        return 1
+    print(PRODUCTION_COMPLETE_MESSAGE)
+    return 0
+
+
 def cmd_migrate(args: argparse.Namespace) -> int:
     """Inspect the active project by default; write only with explicit --apply."""
     slug = read_active(args.root)
@@ -741,6 +1275,10 @@ def cmd_migrate(args: argparse.Namespace) -> int:
         key for key in DEPRECATED_SESSION_KEYS if key in session_values
     )
     submission_path = project_file(project, "meta/submission.json")
+    learning_path = project_file(project, "LEARNINGS.md")
+    if learning_path.is_symlink() or (learning_path.exists() and not learning_path.is_file()):
+        errors.append("LEARNINGS.md must be a regular non-symlink file")
+    learning_missing = not learning_path.exists()
     migrated_meta: dict | None = None
     meta_changes: list[str] = []
     if submission_path.exists():
@@ -769,6 +1307,8 @@ def cmd_migrate(args: argparse.Namespace) -> int:
     planned = [f"SESSION {key}: {value}" for key, value in session_updates.items()]
     planned.extend(f"SESSION remove deprecated field: {key}" for key in session_removals)
     planned.extend(f"submission {change}" for change in meta_changes)
+    if learning_missing:
+        planned.append("create project LEARNINGS.md")
     if not planned:
         print(f"project '{slug}' already uses schema v{SESSION_SCHEMA_VERSION}; no files changed")
         return 0
@@ -799,10 +1339,16 @@ def cmd_migrate(args: argparse.Namespace) -> int:
             print("No files changed.", file=sys.stderr)
             return 1
         writes.append((submission_path, rendered_meta))
+    if learning_missing:
+        writes.append((learning_path, LEARNINGS_TEMPLATE))
     backups: dict[Path, Path] = {}
+    new_paths: set[Path] = set()
     try:
         for path, _ in writes:
-            backups[path] = backup_file(path)
+            if path.exists():
+                backups[path] = backup_file(path)
+            else:
+                new_paths.add(path)
     except OSError as exc:
         print(f"ERROR could not create migration backups: {exc}", file=sys.stderr)
         cleanup_errors: list[str] = []
@@ -825,6 +1371,12 @@ def cmd_migrate(args: argparse.Namespace) -> int:
                 atomic_write_bytes(path, backup.read_bytes())
             except Exception as restore_exc:
                 restore_errors.append(f"{path}: {restore_exc}")
+        for path in new_paths:
+            try:
+                if path.exists() and not path.is_symlink():
+                    path.unlink()
+            except Exception as restore_exc:
+                restore_errors.append(f"{path}: {restore_exc}")
         print(f"ERROR migration write failed: {exc}", file=sys.stderr)
         if restore_errors:
             print("ERROR rollback incomplete: " + "; ".join(restore_errors), file=sys.stderr)
@@ -836,21 +1388,30 @@ def cmd_migrate(args: argparse.Namespace) -> int:
     for backup in backups.values():
         print(f"BACKUP {backup}")
     if not submission_path.exists():
-        print("NOTE submission.json does not exist; create it from the v2 template at P7")
+        print("NOTE submission.json does not exist; create it from the v3 template at P7")
     print(f"MIGRATED project '{slug}' to schema v{SESSION_SCHEMA_VERSION}")
     return 0
 
 
 def dispatch_command(args: argparse.Namespace) -> int:
     """Serialize shared ACTIVE changes and state mutations across cooperating agents."""
-    if args.command not in {"new", "use", "confirm-p0", "migrate"}:
+    state_commands = {
+        "confirm-p0",
+        "confirm-design",
+        "confirm-three-view",
+        "migrate",
+        "record-learning",
+        "confirm-account",
+        "complete-production",
+    }
+    if args.command not in {"new", "use", *state_commands}:
         return args.func(args)
 
     base = projects_root(args.root)
     if base.is_symlink() or not base.is_dir():
         raise ProjectPathError(f"projects must be a regular directory: {base}")
     with exclusive_lock(base / ".line-stamp-projects.lock", f"project command {args.command}"):
-        if args.command in {"confirm-p0", "migrate"}:
+        if args.command in state_commands:
             slug = read_active(args.root)
             if slug:
                 project = project_directory(args.root, slug)
@@ -893,6 +1454,27 @@ def main() -> int:
     p_confirm.add_argument("--publish", choices=("yes", "local-only"), required=True)
     p_confirm.set_defaults(func=cmd_confirm_p0)
 
+    p_design = sub.add_parser(
+        "confirm-design",
+        help="persist an immutable approved P1 design sheet and advance to P2",
+    )
+    p_design.add_argument("--image", required=True)
+    p_design.add_argument("--reference", action="append", required=True)
+    p_design.add_argument("--hairstyle", required=True)
+    p_design.add_argument("--head-ratio", type=float, required=True)
+    p_design.add_argument("--clothing", required=True)
+    p_design.add_argument("--color", action="append", required=True)
+    p_design.add_argument("--eyes", required=True)
+    p_design.add_argument("--accessories", required=True)
+    p_design.set_defaults(func=cmd_confirm_design)
+
+    p_three_view = sub.add_parser(
+        "confirm-three-view",
+        help="bind an approved P2 three-view image to the current design evidence",
+    )
+    p_three_view.add_argument("--image", required=True)
+    p_three_view.set_defaults(func=cmd_confirm_three_view)
+
     p_use = sub.add_parser("use", help="select an existing project")
     p_use.add_argument("slug")
     p_use.set_defaults(func=cmd_use)
@@ -901,7 +1483,42 @@ def main() -> int:
     p_status.add_argument("--json", action="store_true")
     p_status.set_defaults(func=cmd_status)
 
-    p_migrate = sub.add_parser("migrate", help="inspect or migrate an active legacy project to schema v3")
+    p_learning = sub.add_parser(
+        "record-learning",
+        help="append one structured problem or lesson to the active project",
+    )
+    p_learning.add_argument("--gate", required=True)
+    p_learning.add_argument("--kind", choices=sorted(LEARNING_KINDS), required=True)
+    p_learning.add_argument("--summary", required=True)
+    p_learning.add_argument("--impact", required=True)
+    p_learning.add_argument("--cause", required=True)
+    p_learning.add_argument("--resolution", required=True)
+    p_learning.add_argument("--candidate", required=True)
+    p_learning.set_defaults(func=cmd_record_learning)
+
+    p_account = sub.add_parser(
+        "confirm-account",
+        help="record the user-confirmed Creators Market identity before P8 input",
+    )
+    p_account.add_argument("--account-name", required=True)
+    p_account.add_argument("--seller-id", required=True)
+    p_account.add_argument("--registration-target", required=True)
+    p_account.set_defaults(func=cmd_confirm_account)
+
+    p_complete = sub.add_parser(
+        "complete-production",
+        help="mark reversible P8 registration work complete and stop",
+    )
+    p_complete.add_argument("--account-name", required=True)
+    p_complete.add_argument("--seller-id", required=True)
+    p_complete.add_argument("--registration-target", required=True)
+    p_complete.add_argument("--preview-confirmed", action="store_true", required=True)
+    p_complete.set_defaults(func=cmd_complete_production)
+
+    p_migrate = sub.add_parser(
+        "migrate",
+        help="inspect or migrate an active legacy project to SESSION schema v4",
+    )
     p_migrate.add_argument("--apply", action="store_true", help="back up and atomically write the planned changes")
     p_migrate.set_defaults(func=cmd_migrate)
 

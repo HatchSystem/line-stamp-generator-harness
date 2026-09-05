@@ -9,7 +9,11 @@ from pathlib import Path
 
 from PIL import Image
 
-from image_utils import hidden_rgb_pixels, internal_hole_sizes
+from image_utils import (
+    hidden_rgb_pixels,
+    internal_hole_sizes,
+    internal_hole_sizes_outside_mask,
+)
 from project_context import enforce_facade_project
 from session_contract import (
     load_static_session,
@@ -128,7 +132,11 @@ def validate_png(
         left, top, right, bottom = bbox
         margins = (left, top, rgba.width - right, rgba.height - bottom)
         if min(margins) < min_margin:
-            warnings.append(f"{path.name} content margin {margins} is below {min_margin}px")
+            errors.append(f"{path.name} content margin {margins} is below required {min_margin}px")
+        elif min_margin >= 12 and min(margins) < 16:
+            warnings.append(
+                f"{path.name} content margin {margins} passes 12px minimum but is below 16px target"
+            )
 
 
 def validate_zip(
@@ -331,8 +339,8 @@ def main() -> None:
     parser.add_argument("--count", type=int, required=True)
     parser.add_argument("--character-dir", required=True, help="Character-only layers from the same project")
     parser.add_argument("--max-micro-hole", type=int, default=64)
-    parser.add_argument("--min-margin", type=int, default=8)
-    parser.add_argument("--text-mode", choices=("font", "ai", "none"), default="font", help="ai: 文字が画像に焼き込まれているため穴検査をスキップし目視に委ねる")
+    parser.add_argument("--min-margin", type=int, default=12)
+    parser.add_argument("--text-mode", choices=("font", "ai", "none"), default="font", help="ai: versioned text masks exclude glyph counters from hole checks")
     parser.add_argument("--zip", required=True)
     args = parser.parse_args()
 
@@ -350,6 +358,7 @@ def main() -> None:
         print("stamps=0 errors=1 warnings=0")
         print(f"ERROR count {args.count} is not allowed for static stickers {sorted(STATIC_COUNTS)}")
         raise SystemExit(1)
+    session: dict[str, str] = {}
     try:
         session = load_static_session(root.parent, {"P6"})
     except ValueError as exc:
@@ -362,8 +371,10 @@ def main() -> None:
                 f"--text-mode {args.text_mode!r} differs from SESSION "
                 f"text_mode={session['text_mode']!r}"
             )
-    if args.max_micro_hole < 0 or args.min_margin < 0:
-        errors.append("hole and margin thresholds must be nonnegative")
+    if args.max_micro_hole < 0:
+        errors.append("hole threshold must be nonnegative")
+    if args.min_margin not in range(12, 17):
+        errors.append("--min-margin must be from 12 through 16 pixels")
 
     expected_names = validate_submission_names(root, args.count, errors, warnings)
 
@@ -377,29 +388,63 @@ def main() -> None:
     validate_stamp_sources(root.parent, root, args.count, errors)
 
     if args.text_mode == "ai":
-        warnings.append("text_mode=ai: micro-hole check skipped (text counters would be false positives); inspect the light/dark review sheet and run public command verify-text")
-        expected_hole_names: list[str] = []
+        mask_value = session.get("text_mask_version", "")
+        if re.fullmatch(r"[1-9][0-9]{0,8}", mask_value) is None:
+            errors.append("AI micro-hole check requires positive SESSION text_mask_version")
+        else:
+            mask_dir = root.parent / "text-masks" / f"v{int(mask_value):02d}"
+            if mask_dir.is_symlink() or not mask_dir.is_dir():
+                errors.append("AI micro-hole check requires a regular versioned text-mask directory")
+            else:
+                for index, name in enumerate(expected_names, start=1):
+                    source = root / name
+                    mask_path = mask_dir / project_stamp_name(index)
+                    if mask_path.is_symlink() or not mask_path.is_file():
+                        errors.append(f"missing text mask {mask_path}")
+                        continue
+                    try:
+                        with Image.open(source) as opened:
+                            opened.load()
+                            stamp = opened.convert("RGBA")
+                        with Image.open(mask_path) as opened_mask:
+                            opened_mask.load()
+                            mask = opened_mask.convert("L")
+                        micro_holes = [
+                            size
+                            for size in internal_hole_sizes_outside_mask(stamp, mask)
+                            if size <= args.max_micro_hole
+                        ]
+                    except Exception as exc:
+                        errors.append(f"cannot apply {mask_path.name} to {name}: {exc}")
+                        continue
+                    if micro_holes:
+                        errors.append(
+                            f"{name} has non-text micro-hole sizes {micro_holes[:8]}"
+                        )
     else:
-        expected_hole_names = expected_names
-    for index, name in enumerate(expected_hole_names, start=1):
-        source = character_dir / project_stamp_name(index)
-        if source.is_symlink() or not source.is_file():
-            errors.append(f"missing character layer {source}")
-            continue
-        try:
-            with Image.open(source) as opened:
-                opened.load()
-                character = opened.convert("RGBA")
-        except Exception as exc:
-            errors.append(f"character layer {source} is not a readable image: {exc}")
-            continue
-        micro_holes = [size for size in internal_hole_sizes(character) if size <= args.max_micro_hole]
-        if micro_holes:
-            errors.append(f"{source.name} character layer has micro-hole sizes {micro_holes[:8]}")
+        for index, name in enumerate(expected_names, start=1):
+            source = character_dir / project_stamp_name(index)
+            if source.is_symlink() or not source.is_file():
+                errors.append(f"missing character layer {source}")
+                continue
+            try:
+                with Image.open(source) as opened:
+                    opened.load()
+                    character = opened.convert("RGBA")
+            except Exception as exc:
+                errors.append(f"character layer {source} is not a readable image: {exc}")
+                continue
+            micro_holes = [
+                size for size in internal_hole_sizes(character) if size <= args.max_micro_hole
+            ]
+            if micro_holes:
+                errors.append(
+                    f"{source.name} character layer has micro-hole sizes {micro_holes[:8]}"
+                )
 
     validate_zip(zip_path, root, ["main.png", "tab.png", *expected_names], errors)
 
-    print(f"stamps={len(found_names)} errors={len(errors)} warnings={len(warnings)}")
+    print(f"stamps={len(expected_names)} errors={len(errors)} warnings={len(warnings)}")
     for message in errors:
         print("ERROR", message)
     for message in warnings:

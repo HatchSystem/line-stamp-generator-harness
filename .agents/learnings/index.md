@@ -2,6 +2,10 @@
 
 | 日付 | 要約 | 詳細 |
 |---|---|---|
+| 2026-09-05 | P1/P2を版付き証跡で固定し、変更時に下流承認を無効化する | [workflow.md](workflow.md#2026-09-05-versioned-design-contract) |
+| 2026-09-05 | AI文字は自動検査の代替経路と文字領域マスクを持ち、安全余白と全点一覧を機械検査する | [pipeline.md](pipeline.md#2026-09-05-image-quality-evidence) |
+| 2026-09-05 | P8開始時のアカウント確認を永続化し、登録入力とプレビューで制作を完了する | [publish.md](publish.md#2026-09-05-production-completion-boundary) |
+| 2026-09-05 | 制作固有の問題はプロジェクト内へ先に記録し、承認済み改善だけを共有ハーネスへ反映する | [workflow.md](workflow.md#2026-09-05-project-learning-promotion) |
 | 2026-09-05 | 内部成果物名と外部サービスの提出名を分離し、梱包・検証・公開前検査で同じ境界契約を使う | [pipeline.md](pipeline.md#2026-09-05-submission-filename-boundary) |
 | 2026-09-05 | 歴史上の人物は内部の著作権・肖像権等の確認と著名人理由の受付拒否から除外し、公式審査とは分離する | [workflow.md](workflow.md#2026-09-05-historical-figure-exception) |
 | 2026-09-05 | 共通層は構造化選択の能力契約、製品アダプタは具体的ツール名を持ち、受付項目の廃止は schema migration と同時に行う | [workflow.md](workflow.md#2026-09-05-structured-intake-contract) |
