@@ -52,7 +52,7 @@ const SCHEMA_GUIDE_DOCS = [
   ".agents/skills/line-stamp-generator/references/application.md",
   ".agents/skills/line-stamp-generator/references/gates.md",
 ];
-const CURRENT_SESSION_SCHEMA_VERSION = 4;
+const CURRENT_SESSION_SCHEMA_VERSION = 5;
 const CURRENT_SUBMISSION_SCHEMA_VERSION = 3;
 const EXPECTED_FACADE_COMMANDS = new Map([
   ["check-publish-ready", "check_publish_ready.py"],
@@ -1749,17 +1749,33 @@ function validateWorkflowContracts() {
   );
 
   check(
-    /^def\s+text_layer_output\s*\(/m.test(composeText) &&
-      /text_mode\s*==\s*["']font["']/.test(composeText) &&
-      /requires --text-layer-dir/.test(composeText) &&
-      /must not use --text-layer-dir/.test(composeText) &&
+    /^def\s+checked_text_mode\s*\(/m.test(composeText) &&
+      /font composition is no longer supported/.test(composeText) &&
+      /font composition settings are no longer supported/.test(composeText) &&
+      !/ImageFont|multiline_text|def\s+choose_font/.test(composeText) &&
       /checked_output_directories\(/.test(composeText) &&
-      /args\.text_layer_dir/.test(composeText),
+      !/args\.text_layer_dir|parser\.add_argument\(["']--text-layer-dir/.test(composeText),
     "COMPOSE_TEXT_LAYER_MODE",
     COMPOSE_IMPLEMENTATION,
     0,
-    "文字レイヤー出力はfontで必須、ai/noneで禁止してください",
+    "フォント合成と文字レイヤー出力を廃止し、旧設定を明示的に拒否してください",
   );
+
+  for (const file of [
+    ".agents/skills/line-stamp-generator/SKILL.md",
+    ".agents/skills/line-stamp-generator/references/text-and-transparency.md",
+    ".agents/roles/stamp-producer.md",
+  ]) {
+    const letteringText = readText(file);
+    check(
+      /キャラクターの画風・配色・性格/.test(letteringText) &&
+        /P4/.test(letteringText) && /P5[^\n]*全点/.test(letteringText) &&
+        /notes/.test(letteringText) && /プロンプト保存先/.test(letteringText) &&
+        /フォント埋め込み・後付け合成は行わない/.test(letteringText),
+      "CHARACTER_LETTERING_CONTRACT", file, 0,
+      "AI文字はキャラクターに合わせてP4で採用し、notesのプロンプト保存先からP5全点へ引き継いでください",
+    );
+  }
 
   const facadeText = readText(FACADE_FILE);
   check(

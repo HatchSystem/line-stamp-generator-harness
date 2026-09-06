@@ -1,17 +1,9 @@
 {
   "style": {
-    "text_mode": "font",
+    "text_mode": "ai",
     "canvas": [370, 320],
-    "font": "fonts/NotoSansJP-Bold.ttf",
-    "text_zone_height": 90,
     "margin": 16,
     "safe_margin": 16,
-    "text_fill": "#FFE57C",
-    "text_outline": "#084E2B",
-    "outline_width": 5,
-    "line_spacing": 4,
-    "max_font_size": 44,
-    "min_font_size": 20,
     "alpha_floor": 12,
     "max_hole_pixels_after_resize": 64,
     "shadow": false

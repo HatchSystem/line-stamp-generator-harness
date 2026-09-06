@@ -53,16 +53,14 @@ PROJECT_DIRS = (
     "raw",
     "characters",
     "character-layers",
-    "text-layers",
     "text-masks",
-    "fonts",
     "stamps",
     "review",
     "submit",
     "meta",
 )
 DONE_STATES = {"production-complete", "local-complete"}
-SESSION_SCHEMA_VERSION = 4
+SESSION_SCHEMA_VERSION = 5
 SUBMISSION_SCHEMA_VERSION = 3
 DEPRECATED_SESSION_KEYS = frozenset({"adult", "consent", "rights"})
 PRODUCTION_COMPLETE_MESSAGE = (
@@ -187,7 +185,7 @@ def p0_updates(args: argparse.Namespace) -> tuple[dict[str, str], list[str]]:
     ):
         errors.append("character-name must be finalized and must not be a template placeholder")
 
-    expected_modes = {"yes": {"font", "ai"}, "no": {"none"}}
+    expected_modes = {"yes": {"ai"}, "no": {"none"}}
     if args.text_mode not in expected_modes[args.text]:
         errors.append(
             f"text={args.text} requires text-mode in {sorted(expected_modes[args.text])}"
@@ -260,7 +258,13 @@ def session_migration_updates(
     *,
     materials_available: bool | None = None,
 ) -> tuple[dict[str, str], list[str]]:
-    """Return meaning-preserving legacy -> v4 SESSION updates without writing files."""
+    """Return meaning-preserving legacy -> v5 SESSION updates without writing files."""
+    if values.get("text_mode") == "font":
+        return {}, [
+            "text_mode=font is no longer supported; preserve this project and create a new "
+            "ai project for regeneration and normal gate approvals. Existing images and "
+            "approvals cannot be relabeled as AI-drawn."
+        ]
     errors: list[str] = []
     raw_version = values.get("schema_version", "1")
     try:
@@ -284,6 +288,13 @@ def session_migration_updates(
         allowed_gates.add("P9")
     if gate not in allowed_gates:
         return {}, [f"SESSION gate={gate!r} is unsupported for schema v{version}"]
+    if version >= 4:
+        text_pair = (values.get("text"), values.get("text_mode"))
+        valid_pairs = {("yes", "ai"), ("no", "none")}
+        if gate == "P0":
+            valid_pairs.add(("unknown", "unknown"))
+        if text_pair not in valid_pairs:
+            return {}, [f"SESSION text/text_mode is inconsistent: {text_pair}; no files changed"]
     post_p0 = re.fullmatch(r"P[1-8]", gate) is not None or (
         version <= 3 and gate == "P9"
     )
@@ -375,7 +386,7 @@ def session_migration_updates(
         }
         if values.get("submission") not in allowed_submission:
             errors.append(
-                f"SESSION submission={values.get('submission')!r} is unsupported for schema v4"
+                f"SESSION submission={values.get('submission')!r} is unsupported for schema v5"
             )
     effective = {**values, **updates}
     for key in (
@@ -390,7 +401,7 @@ def session_migration_updates(
         "submission",
     ):
         if key not in effective or not effective[key]:
-            errors.append(f"SESSION schema v4 requires field {key}")
+            errors.append(f"SESSION schema v5 requires field {key}")
     for key in ("design_version", "three_view_version", "text_mask_version"):
         if key in effective and re.fullmatch(r"[0-9]{1,9}", effective[key]) is None:
             errors.append(f"SESSION {key} must be a nonnegative integer")
@@ -827,6 +838,8 @@ def active_session(args: argparse.Namespace) -> tuple[str, Path, Path, str, dict
         raise ProjectPathError(
             f"SESSION project={values.get('project')!r} does not match ACTIVE={slug!r}"
         )
+    if values.get("text_mode") == "font":
+        raise ProjectPathError("text_mode=font is no longer supported; preserve this project and create a new ai project for regeneration and normal gate approvals")
     if values.get("schema_version") != str(SESSION_SCHEMA_VERSION):
         raise ProjectPathError(
             f"SESSION schema_version must be {SESSION_SCHEMA_VERSION}; run project migrate first"
@@ -1448,7 +1461,8 @@ def main() -> int:
     p_confirm.add_argument("--source", choices=("photo", "character"), required=True)
     p_confirm.add_argument("--count", type=int, choices=ALLOWED_COUNTS, required=True)
     p_confirm.add_argument("--text", choices=("yes", "no"), required=True)
-    p_confirm.add_argument("--text-mode", choices=("font", "ai", "none"), required=True)
+    p_confirm.add_argument("--text-mode", choices=("ai", "none"), required=True,
+                           help="font composition is no longer supported; text=yes requires ai")
     p_confirm.add_argument("--character-name", required=True, help="public display name; never a real name")
     p_confirm.add_argument("--sample-candidates", type=int, choices=(1, 2, 3), required=True)
     p_confirm.add_argument("--publish", choices=("yes", "local-only"), required=True)
@@ -1517,7 +1531,7 @@ def main() -> int:
 
     p_migrate = sub.add_parser(
         "migrate",
-        help="inspect or migrate an active legacy project to SESSION schema v4",
+        help="inspect or migrate an active legacy project to SESSION schema v5 (font requires a new ai project)",
     )
     p_migrate.add_argument("--apply", action="store_true", help="back up and atomically write the planned changes")
     p_migrate.set_defaults(func=cmd_migrate)

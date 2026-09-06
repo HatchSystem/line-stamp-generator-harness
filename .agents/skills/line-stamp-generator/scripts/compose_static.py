@@ -6,7 +6,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 
 from image_utils import (
     enforce_safe_margin,
@@ -21,40 +21,23 @@ from session_contract import load_static_session, session_count
 from transaction_utils import ArtifactRollbackError, exclusive_lock, install_files_transaction
 
 
-def color(value: str) -> tuple[int, int, int, int]:
-    value = value.lstrip("#")
-    if len(value) not in (6, 8):
-        raise ValueError(f"Invalid color: {value}")
-    channels = tuple(int(value[i : i + 2], 16) for i in range(0, len(value), 2))
-    return (*channels, 255) if len(channels) == 3 else channels
-
-
-def text_size(
-    lines: list[str], font: ImageFont.FreeTypeFont, spacing: int, stroke_width: int
-) -> tuple[int, int, tuple[int, int, int, int]]:
-    probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
-    box = probe.multiline_textbbox(
-        (0, 0), "\n".join(lines), font=font, spacing=spacing, align="center", stroke_width=stroke_width
-    )
-    return box[2] - box[0], box[3] - box[1], box
-
-
-def choose_font(
-    lines: list[str],
-    font_path: Path,
-    max_size: int,
-    min_size: int,
-    max_width: int,
-    max_height: int,
-    spacing: int,
-    stroke_width: int,
-) -> tuple[ImageFont.FreeTypeFont, tuple[int, int, int, int]]:
-    for size in range(max_size, min_size - 1, -1):
-        font = ImageFont.truetype(str(font_path), size)
-        width, height, box = text_size(lines, font, spacing, stroke_width)
-        if width <= max_width and height <= max_height:
-            return font, box
-    raise ValueError(f"Text does not fit at minimum font size: {lines}")
+def checked_text_mode(style: dict) -> str:
+    """Reject retired font composition settings instead of silently ignoring them."""
+    mode = style.get("text_mode")
+    if mode == "font":
+        raise ValueError("font composition is no longer supported; create a new ai project")
+    if mode not in ("ai", "none"):
+        raise ValueError("style.text_mode must be explicitly ai or none")
+    retired = {
+        "font", "text_zone_height", "text_fill", "text_outline", "outline_width",
+        "line_spacing", "max_font_size", "min_font_size",
+    }.intersection(style)
+    if retired:
+        raise ValueError(
+            f"font composition settings are no longer supported: {sorted(retired)}; "
+            "describe lettering in the approved generation prompt instead"
+        )
+    return mode
 
 
 def resolve_project_file(base: Path, value: str, label: str) -> Path:
@@ -71,51 +54,31 @@ def resolve_project_file(base: Path, value: str, label: str) -> Path:
     return resolved
 
 
-def text_layer_output(text_mode: str, value: str | None) -> Path | None:
-    """Keep persisted text layers exclusive to deterministic font composition."""
-    if text_mode == "font":
-        if not value:
-            raise ValueError("text_mode=font requires --text-layer-dir")
-        return Path(value)
-    if value:
-        raise ValueError(f"text_mode={text_mode} must not use --text-layer-dir")
-    return None
-
-
 def checked_output_directories(
     base: Path,
     outdir_value: str,
     character_value: str,
-    text_value: str | None,
-    text_mode: str,
-) -> tuple[Path, Path, Path | None]:
+) -> tuple[Path, Path]:
     """Bind each artifact class to its canonical, non-overlapping project directory."""
     base = base.resolve()
     raw_outdir = Path(outdir_value)
     raw_character_dir = Path(character_value)
-    text_dir_value = text_layer_output(text_mode, text_value)
     for label, path in (
         ("--outdir", raw_outdir),
         ("--character-layer-dir", raw_character_dir),
-        ("--text-layer-dir", text_dir_value),
     ):
-        if path is not None and path.is_symlink():
+        if path.is_symlink():
             raise ValueError(f"{label} must not be a symlink")
     outdir = raw_outdir.resolve()
     character_dir = raw_character_dir.resolve()
-    text_dir = text_dir_value.resolve() if text_dir_value else None
     expected = {
         "--outdir": base / "stamps",
         "--character-layer-dir": base / "character-layers",
     }
-    if text_dir is not None:
-        expected["--text-layer-dir"] = base / "text-layers"
     actual = {
         "--outdir": outdir,
         "--character-layer-dir": character_dir,
     }
-    if text_dir is not None:
-        actual["--text-layer-dir"] = text_dir
     for label, expected_path in expected.items():
         if actual[label] != expected_path:
             raise ValueError(f"{label} must be {expected_path} for this project")
@@ -123,7 +86,7 @@ def checked_output_directories(
             raise ValueError(f"{label} escapes the project")
     if len(set(actual.values())) != len(actual):
         raise ValueError("compose output directories must resolve to distinct locations")
-    return outdir, character_dir, text_dir
+    return outdir, character_dir
 
 
 def checked_items(value: object) -> list[dict]:
@@ -154,11 +117,10 @@ def checked_items(value: object) -> list[dict]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Compose transparent character layers with deterministic outlined text")
+    parser = argparse.ArgumentParser(description="Place AI-lettered or text-free images on transparent canvases; font composition and --text-layer-dir are no longer supported")
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--outdir", required=True)
     parser.add_argument("--character-layer-dir", required=True)
-    parser.add_argument("--text-layer-dir")
     args = parser.parse_args()
 
     raw_manifest_path = Path(args.manifest)
@@ -193,15 +155,12 @@ def main() -> None:
         raise ValueError("manifest.style must be an object")
     if style.get("shadow"):
         raise ValueError("Text shadows are disabled; use a concentric outline only")
-    text_mode = style.get("text_mode", "font")
-    if text_mode not in ("font", "ai", "none"):
-        raise ValueError("style.text_mode must be font, ai or none")
+    text_mode = checked_text_mode(style)
     if text_mode != session["text_mode"]:
         raise ValueError(
             f"manifest style.text_mode={text_mode!r} differs from SESSION "
             f"text_mode={session['text_mode']!r}"
         )
-    draw_text = text_mode == "font"
 
     canvas = style.get("canvas", [370, 320])
     if (
@@ -213,31 +172,20 @@ def main() -> None:
     canvas_width, canvas_height = canvas
     if canvas_width % 2 or canvas_height % 2:
         raise ValueError("Canvas dimensions must be even")
-    text_zone = int(style.get("text_zone_height", 90)) if draw_text else 0
     margin = int(style.get("margin", 10))
     safe_margin = int(style.get("safe_margin", 16))
-    spacing = int(style.get("line_spacing", 4))
-    stroke_width = int(style.get("outline_width", 5))
-    if margin < 0 or spacing < 0 or stroke_width < 0 or text_zone < 0:
-        raise ValueError("style margin, line_spacing, outline_width and text_zone_height must be nonnegative")
+    if margin < 0:
+        raise ValueError("style.margin must be nonnegative")
     if safe_margin not in range(12, 17):
         raise ValueError("style.safe_margin must be from 12 through 16 pixels")
-    if margin * 2 >= canvas_width or margin >= canvas_height or text_zone + margin >= canvas_height:
-        raise ValueError("style margins and text zone leave no drawable character area")
-    font_value = style.get("font")
-    if draw_text and (not isinstance(font_value, str) or not font_value.strip()):
-        raise ValueError("text_mode=font requires a nonempty style.font path")
-    font_path = resolve_project_file(base, font_value, "style.font") if draw_text else None
+    if margin * 2 >= canvas_width or margin >= canvas_height:
+        raise ValueError("style margins leave no drawable character area")
 
-    outdir, character_layer_dir, text_layer_dir = checked_output_directories(
+    outdir, character_layer_dir = checked_output_directories(
         base,
         args.outdir,
         args.character_layer_dir,
-        args.text_layer_dir,
-        text_mode,
     )
-    fill = color(style.get("text_fill", "#FFE57C"))
-    outline = color(style.get("text_outline", "#084E2B"))
     alpha_floor = int(style.get("alpha_floor", 12))
     if alpha_floor not in range(0, 256):
         raise ValueError("style.alpha_floor must be from 0 through 255")
@@ -279,7 +227,7 @@ def main() -> None:
                 with Image.open(character_path) as opened:
                     character = trim_alpha(opened.convert("RGBA"))
                 character.thumbnail(
-                    (canvas_width - margin * 2, canvas_height - text_zone - margin),
+                    (canvas_width - margin * 2, canvas_height - margin),
                     Image.Resampling.LANCZOS,
                 )
                 if text_mode != "ai":  # ai mode: baked text counters must never be filled
@@ -291,37 +239,9 @@ def main() -> None:
                 character_layer = Image.new("RGBA", (canvas_width, canvas_height), (0, 0, 0, 0))
                 character_x = (canvas_width - character.width) // 2
                 character_y = canvas_height - margin - character.height
-                if character_y < text_zone:
-                    raise ValueError(f"Character overlaps text zone for item {index}")
                 character_layer.alpha_composite(character, (character_x, character_y))
 
-                text_layer = Image.new("RGBA", (canvas_width, canvas_height), (0, 0, 0, 0))
-                if lines and draw_text:
-                    font, box = choose_font(
-                        lines,
-                        font_path,
-                        int(style.get("max_font_size", 44)),
-                        int(style.get("min_font_size", 20)),
-                        canvas_width - margin * 2,
-                        text_zone - margin * 2,
-                        spacing,
-                        stroke_width,
-                    )
-                    width, height = box[2] - box[0], box[3] - box[1]
-                    x = (canvas_width - width) // 2 - box[0]
-                    y = margin + (text_zone - margin * 2 - height) // 2 - box[1]
-                    ImageDraw.Draw(text_layer).multiline_text(
-                        (x, y),
-                        "\n".join(lines),
-                        font=font,
-                        fill=fill,
-                        spacing=spacing,
-                        align="center",
-                        stroke_width=stroke_width,
-                        stroke_fill=outline,
-                    )
-
-                final = sanitize_alpha(Image.alpha_composite(character_layer, text_layer), alpha_floor)
+                final = sanitize_alpha(character_layer, alpha_floor)
                 final, margin_adjusted = enforce_safe_margin(
                     final,
                     required=12,
@@ -337,18 +257,13 @@ def main() -> None:
                 installs.extend(
                     [(staged_final, outdir / name), (staged_character, character_layer_dir / name)]
                 )
-                if text_layer_dir:
-                    staged_text = staging / "text-layers" / name
-                    save_png(sanitize_alpha(text_layer, alpha_floor), staged_text)
-                    installs.append((staged_text, text_layer_dir / name))
                 messages.append(
                     f"wrote {name} mode={text_mode} text={'/'.join(lines)} "
                     f"safe-margin={'adjusted' if margin_adjusted else 'ok'}"
                 )
 
-            for directory in (outdir, character_layer_dir, text_layer_dir):
-                if directory is not None:
-                    directory.mkdir(parents=True, exist_ok=True)
+            for directory in (outdir, character_layer_dir):
+                directory.mkdir(parents=True, exist_ok=True)
             try:
                 install_files_transaction(staging, installs)
             except ArtifactRollbackError:

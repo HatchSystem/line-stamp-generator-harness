@@ -15,7 +15,8 @@ from tempfile import TemporaryDirectory
 
 from PIL import Image, ImageDraw
 
-from compose_static import checked_items, checked_output_directories, text_layer_output
+from compose_static import checked_items, checked_output_directories, checked_text_mode
+from compose_static import main as compose_main
 from check_publish_ready import (
     check_ai_provenance,
     check_ai_declaration,
@@ -114,7 +115,7 @@ def check_visual_review_flow() -> None:
         (root / "projects" / "ACTIVE").write_text("visual-demo\n", encoding="utf-8")
         session_path = project / "SESSION.md"
         session_path.write_text(
-            "- schema_version: 4\n- project: visual-demo\n- materials: received\n"
+            "- schema_version: 5\n- project: visual-demo\n- materials: received\n"
             "- count: 8\n- text: yes\n- text_mode: ai\n- text_check: not-run\n"
             "- text_mask_version: 0\n- review_version: 0\n- gate: P4\n",
             encoding="utf-8",
@@ -368,6 +369,139 @@ def write_design_evidence_fixture(project: Path) -> None:
     )
 
 
+def check_ai_only_pipeline() -> None:
+    """Exercise real output and migration transactions without claiming AI generation."""
+    with TemporaryDirectory() as directory:
+        root = Path(directory)
+        (root / "projects").mkdir()
+        sink = StringIO()
+        with redirect_stdout(sink):
+            assert cmd_new(Namespace(root=str(root), slug="lettering")) == 0
+        project = root / "projects" / "lettering"
+        session_path = project / "SESSION.md"
+        initial = session_path.read_text(encoding="utf-8")
+        (project / "refs" / "source.png").write_bytes(b"preserved source fixture")
+        preserved = project / "submit" / "old.zip"
+        preserved.write_bytes(b"preserved prior artwork")
+
+        for mode, text, gate in (("ai", "yes", "P5"), ("none", "no", "P5"),
+                                 ("unknown", "unknown", "P0")):
+            source = update_session_text(initial, {
+                "schema_version": "4", "text_mode": mode, "text": text,
+                "gate": gate, "materials": "received", "count": "8",
+                "sample": "approved" if gate == "P5" else "pending",
+                "notes": "preserve lettering and prompt reference",
+            })
+            session_path.write_text(source, encoding="utf-8")
+            with redirect_stdout(sink), redirect_stderr(sink):
+                assert cmd_migrate(Namespace(root=str(root), apply=False)) == 0
+            assert session_path.read_text(encoding="utf-8") == source
+            with redirect_stdout(sink), redirect_stderr(sink):
+                assert cmd_migrate(Namespace(root=str(root), apply=True)) == 0
+            migrated = session_path.read_text(encoding="utf-8")
+            assert migrated == update_session_text(source, {"schema_version": "5"})
+            backups = list(project.glob("SESSION.md.pre-v5-*.bak"))
+            assert any(path.read_text(encoding="utf-8") == source for path in backups)
+            with redirect_stdout(sink), redirect_stderr(sink):
+                assert cmd_migrate(Namespace(root=str(root), apply=True)) == 0
+            assert session_path.read_text(encoding="utf-8") == migrated
+            assert list(project.glob("SESSION.md.pre-v5-*.bak")) == backups
+            assert preserved.read_bytes() == b"preserved prior artwork"
+
+        for schema in ("4", "5"):
+            source = update_session_text(initial, {
+                "schema_version": schema, "text_mode": "font", "text": "yes",
+                "gate": "P6", "materials": "received", "count": "8",
+                "text_check": "n/a", "sample": "approved",
+            })
+            session_path.write_text(source, encoding="utf-8")
+            before = {p.relative_to(project): p.read_bytes()
+                      for p in project.rglob("*") if p.is_file()}
+            for apply in (False, True):
+                with redirect_stdout(sink), redirect_stderr(sink):
+                    assert cmd_migrate(Namespace(root=str(root), apply=apply)) == 1
+            with redirect_stdout(sink):
+                assert project_module.cmd_status(Namespace(root=str(root), json=True)) == 0
+            assert '"text_mode": "font"' in sink.getvalue()
+            try:
+                load_static_session(project, {"P6"})
+            except ValueError as exc:
+                assert "new ai project" in str(exc)
+            else:
+                raise AssertionError("legacy font project accepted for packaging")
+            try:
+                project_module.active_session(Namespace(root=str(root)))
+            except ProjectPathError as exc:
+                assert "new ai project" in str(exc)
+            else:
+                raise AssertionError("legacy font project accepted for state changes")
+            assert before == {p.relative_to(project): p.read_bytes()
+                              for p in project.rglob("*") if p.is_file()}
+
+        values = parse_session_for_migration(source)[0]
+        for pair in (("yes", "none"), ("no", "ai"), ("yes", "unknown")):
+            updates, errors = session_migration_updates(
+                dict(values, text=pair[0], text_mode=pair[1]))
+            assert not updates and errors
+
+        for mode in ("ai", "none"):
+            source = update_session_text(initial, {
+                "text_mode": mode, "text": "yes" if mode == "ai" else "no",
+                "gate": "P4", "materials": "received", "count": "8",
+                "text_check": "not-run" if mode == "ai" else "n/a",
+            })
+            session_path.write_text(source, encoding="utf-8")
+            write_design_evidence_fixture(project)
+            # A synthetic one-pixel counter tests preservation, not text recognition.
+            raster = Image.new("RGBA", (60, 60), (40, 90, 150, 255))
+            raster.putpixel((30, 30), (0, 0, 0, 0))
+            save_png(raster, project / "characters" / "stamp01.png")
+            manifest = {
+                "style": {"text_mode": mode, "canvas": [370, 320], "margin": 16},
+                "items": [{"id": 1, "character": "characters/stamp01.png",
+                           "text": ["fixture"] if mode == "ai" else []}],
+            }
+            manifest_path = project / "manifest.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            args = ["compose-static", "--manifest", str(manifest_path),
+                    "--outdir", str(project / "stamps"),
+                    "--character-layer-dir", str(project / "character-layers")]
+            previous_argv = sys.argv
+            try:
+                sys.argv = args
+                with redirect_stdout(sink):
+                    compose_main()
+                final_path = project / "stamps" / "stamp01.png"
+                with Image.open(final_path) as output:
+                    assert output.size == (370, 320)
+                    assert output.getpixel((185, 274))[3] == (0 if mode == "ai" else 255)
+                    assert output.getpixel((155, 244)) == (40, 90, 150, 255)
+                    assert output.getbbox() == (155, 244, 215, 304)
+                assert not (project / "text-layers").exists()
+                before_output = final_path.read_bytes()
+                sys.argv = args + ["--text-layer-dir", str(project / "text-layers")]
+                with redirect_stderr(sink):
+                    try:
+                        compose_main()
+                    except SystemExit as exc:
+                        assert exc.code == 2
+                    else:
+                        raise AssertionError("retired text layer CLI option accepted")
+                sys.argv = args
+                manifest["style"]["font"] = "fonts/old.ttf"
+                manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+                try:
+                    compose_main()
+                except ValueError as exc:
+                    assert "no longer supported" in str(exc)
+                else:
+                    raise AssertionError("legacy font settings accepted by composition")
+                assert final_path.read_bytes() == before_output
+            finally:
+                sys.argv = previous_argv
+    print("PASS ai-only-composition retired-font-rejection v4-v5-migration-preservation")
+
+
 def main() -> None:
     assert [project_stamp_name(index) for index in (1, 8, 40)] == [
         "stamp01.png",
@@ -388,16 +522,24 @@ def main() -> None:
             else:
                 raise AssertionError(f"stamp naming accepted invalid index {invalid_index!r}")
 
-    assert text_layer_output("font", "text-layers") == Path("text-layers")
-    assert text_layer_output("ai", None) is None
-    assert text_layer_output("none", None) is None
-    for mode, value in (("font", None), ("ai", "text-layers"), ("none", "text-layers")):
+    for mode in ("ai", "none"):
+        assert checked_text_mode({"text_mode": mode}) == mode
+    for style in ({}, {"text_mode": "font"}, {"text_mode": "unknown"}):
         try:
-            text_layer_output(mode, value)
+            checked_text_mode(style)
         except ValueError:
             pass
         else:
-            raise AssertionError(f"invalid text layer output accepted: {mode=} {value=}")
+            raise AssertionError(f"unsupported text mode accepted: {style}")
+    for key in ("font", "text_zone_height", "text_fill", "text_outline",
+                "outline_width", "line_spacing", "max_font_size", "min_font_size"):
+        for mode in ("ai", "none"):
+            try:
+                checked_text_mode({"text_mode": mode, key: None})
+            except ValueError as exc:
+                assert "no longer supported" in str(exc)
+            else:
+                raise AssertionError(f"retired font setting accepted: {mode} {key}")
 
     parser = ArgumentParser(description="Run line-stamp harness regression tests")
     parser.parse_args()
@@ -565,13 +707,13 @@ def main() -> None:
         assert any("must not be empty" in message for message in empty_prompt_errors)
 
     complete_session = {
-        "schema_version": "4",
+        "schema_version": "5",
         "project": "demo",
         "materials": "received",
         "source": "character",
         "count": "16",
-        "text": "yes",
-        "text_mode": "font",
+        "text": "no",
+        "text_mode": "none",
         "text_check": "n/a",
         "text_mask_version": "0",
         "gate": "P7",
@@ -588,6 +730,10 @@ def main() -> None:
     session_errors: list[str] = []
     check_session_state(complete_session, Path("projects/demo/SESSION.md"), session_errors)
     assert not session_errors
+    legacy_font_errors: list[str] = []
+    check_session_state(dict(complete_session, text="yes", text_mode="font"),
+                        Path("projects/demo/SESSION.md"), legacy_font_errors)
+    assert any("new ai project" in message for message in legacy_font_errors)
     deprecated_session_errors: list[str] = []
     check_session_state(
         dict(complete_session, consent="yes"),
@@ -618,13 +764,13 @@ def main() -> None:
     }.items():
         updates, errors = session_migration_updates({"publish": old_publish, "gate": "P0"})
         assert not errors
-        assert updates["schema_version"] == "4"
+        assert updates["schema_version"] == "5"
         assert updates["materials"] == "pending"
         assert updates.get("publish", old_publish) == expected
     _, errors = session_migration_updates({"publish": "surprise", "gate": "P0"})
     assert errors
     _, errors = session_migration_updates(
-        {"schema_version": "4", "publish": "yes", "materials": "received"}
+        {"schema_version": "5", "publish": "yes", "materials": "received"}
     )
     assert errors
     pending_legacy = {
@@ -640,7 +786,7 @@ def main() -> None:
     updates, errors = session_migration_updates(
         {"schema_version": "02", "publish": "yes", "materials": "received", "gate": "P0"}
     )
-    assert not errors and updates["schema_version"] == "4"
+    assert not errors and updates["schema_version"] == "5"
     updates, errors = session_migration_updates(
         {
             "schema_version": "3",
@@ -658,6 +804,7 @@ def main() -> None:
 
     old_session = (
         "# SESSION\n\n- project: sample\n- publish: private\n- gate: P6\n"
+        "- text: no\n- text_mode: none\n- text_check: n/a\n"
         "- rights: own\n- adult: yes\n- consent: yes\n- notes: keep me\n"
     )
     parsed, errors = parse_session_for_migration(old_session)
@@ -667,7 +814,7 @@ def main() -> None:
     migrated_session = remove_session_keys(
         update_session_text(old_session, updates), {"adult", "consent", "rights"}
     )
-    assert "- schema_version: 4" in migrated_session
+    assert "- schema_version: 5" in migrated_session
     assert "- publish: local-only" in migrated_session
     assert "- materials: received" in migrated_session
     assert not any(
@@ -705,7 +852,7 @@ def main() -> None:
     check_ai_declaration({"text_mode": "ai"}, False, ai_declaration_errors)
     assert ai_declaration_errors
     ai_declaration_errors = []
-    check_ai_declaration({"text_mode": "font"}, False, ai_declaration_errors)
+    check_ai_declaration({"text_mode": "none"}, False, ai_declaration_errors)
     assert not ai_declaration_errors
     copyright_errors: list[str] = []
     check_copyright("2026LINE", copyright_errors)
@@ -780,13 +927,20 @@ def main() -> None:
             "source": "photo",
             "count": 16,
             "text": "yes",
-            "text_mode": "font",
+            "text_mode": "ai",
             "character_name": "Sample-kun",
             "sample_candidates": 1,
             "publish": "yes",
         }
         _, intake_errors = p0_updates(Namespace(**dict(base_intake, publish="local-only")))
         assert not intake_errors
+        assert not (session_path.parent / "fonts").exists()
+        assert not (session_path.parent / "text-layers").exists()
+        _, intake_errors = p0_updates(Namespace(**dict(base_intake, text_mode="font")))
+        assert intake_errors
+        none_intake, intake_errors = p0_updates(
+            Namespace(**dict(base_intake, text="no", text_mode="none")))
+        assert not intake_errors and none_intake["text_check"] == "n/a"
         character_intake = dict(base_intake, source="character")
         _, intake_errors = p0_updates(Namespace(**character_intake))
         assert not intake_errors
@@ -935,7 +1089,6 @@ def main() -> None:
             "characters",
             "stamps",
             "character-layers",
-            "text-layers",
             "review",
             "meta",
             "submit",
@@ -944,7 +1097,7 @@ def main() -> None:
         (harness / "projects" / "ACTIVE").write_text("demo\n", encoding="utf-8")
         (project / "SESSION.md").write_text(
             "# SESSION\n\n"
-            "- schema_version: 4\n"
+            "- schema_version: 5\n"
             "- project: demo\n"
             "- materials: received\n"
             "- count: 8\n"
@@ -957,23 +1110,18 @@ def main() -> None:
             encoding="utf-8",
         )
         write_design_evidence_fixture(project)
-        outdir, character_dir, text_dir = checked_output_directories(
+        outdir, character_dir = checked_output_directories(
             project,
             str(project / "stamps"),
             str(project / "character-layers"),
-            str(project / "text-layers"),
-            "font",
         )
         assert outdir == (project / "stamps").resolve()
         assert character_dir == (project / "character-layers").resolve()
-        assert text_dir == (project / "text-layers").resolve()
         try:
             checked_output_directories(
                 project,
                 str(project / "stamps"),
                 str(project / "stamps"),
-                str(project / "text-layers"),
-                "font",
             )
         except ValueError:
             pass
@@ -1339,7 +1487,7 @@ def main() -> None:
         with redirect_stdout(sink), redirect_stderr(sink):
             assert cmd_migrate(Namespace(root=str(root), apply=True)) == 0
         migrated_values = parse_session_for_migration(session_path.read_text(encoding="utf-8"))[0]
-        assert migrated_values["schema_version"] == "4"
+        assert migrated_values["schema_version"] == "5"
         assert migrated_values["materials"] == "received"
         assert not any(key in migrated_values for key in ("adult", "consent", "rights"))
         written_meta = json.loads(submission_path.read_text(encoding="utf-8"))
@@ -1347,8 +1495,8 @@ def main() -> None:
         assert (project / "LEARNINGS.md").read_text(encoding="utf-8").startswith(
             "# Project learnings\n"
         )
-        assert list(project.glob("SESSION.md.pre-v4-*.bak"))
-        assert list((project / "meta").glob("submission.json.pre-v4-*.bak"))
+        assert list(project.glob("SESSION.md.pre-v5-*.bak"))
+        assert list((project / "meta").glob("submission.json.pre-v5-*.bak"))
         backups_after_first_apply = list(project.rglob("*.bak"))
         with redirect_stdout(sink), redirect_stderr(sink):
             assert cmd_migrate(Namespace(root=str(root), apply=True)) == 0
@@ -1639,12 +1787,12 @@ def main() -> None:
             )
             (project / "SESSION.md").write_text(
                 "# SESSION\n\n"
-                "- schema_version: 4\n"
+                "- schema_version: 5\n"
                 f"- project: pack-{boundary_count}\n"
                 "- materials: received\n"
                 f"- count: {boundary_count}\n"
-                "- text: yes\n"
-                "- text_mode: font\n"
+                "- text: no\n"
+                "- text_mode: none\n"
                 "- text_check: n/a\n"
                 "- text_mask_version: 0\n"
                 "- review_version: 1\n"
@@ -1686,12 +1834,12 @@ def main() -> None:
         (project.parent / "ACTIVE").write_text("pack\n", encoding="utf-8")
         (project / "SESSION.md").write_text(
             "# SESSION\n\n"
-            "- schema_version: 4\n"
+            "- schema_version: 5\n"
             "- project: pack\n"
             "- materials: received\n"
             "- count: 8\n"
-            "- text: yes\n"
-            "- text_mode: font\n"
+            "- text: no\n"
+            "- text_mode: none\n"
             "- text_check: n/a\n"
             "- text_mask_version: 0\n"
             "- review_version: 1\n"
@@ -1699,9 +1847,9 @@ def main() -> None:
             encoding="utf-8",
         )
         write_design_evidence_fixture(project)
-        font_session = (project / "SESSION.md").read_text(encoding="utf-8")
+        none_session = (project / "SESSION.md").read_text(encoding="utf-8")
         (project / "SESSION.md").write_text(
-            font_session.replace("- text_mask_version: 0", "- text_mask_version: 2"),
+            none_session.replace("- text_mask_version: 0", "- text_mask_version: 2"),
             encoding="utf-8",
         )
         try:
@@ -1709,8 +1857,8 @@ def main() -> None:
         except ValueError as exc:
             assert "requires text_mask_version=0" in str(exc)
         else:
-            raise AssertionError("font text mode accepted stale AI text masks")
-        (project / "SESSION.md").write_text(font_session, encoding="utf-8")
+            raise AssertionError("none text mode accepted stale AI text masks")
+        (project / "SESSION.md").write_text(none_session, encoding="utf-8")
         for index in range(1, 9):
             stamp = Image.new("RGBA", (100, 100), (0, 0, 0, 0))
             ImageDraw.Draw(stamp).rectangle(
@@ -1982,6 +2130,7 @@ def main() -> None:
     )
     check_visual_review_flow()
     print("PASS ai-visual-review p4-p5-recording stale-evidence-rejection legacy-text-compatibility")
+    check_ai_only_pipeline()
 
 
 if __name__ == "__main__":

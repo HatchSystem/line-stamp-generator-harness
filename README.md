@@ -88,7 +88,7 @@ GitHub Actions は、Ubuntu + Python 3.10 で全品質検査を1回実行し、U
 5. P6 で内部の `stampNN.png` を Creators Market 用の `NN.png` へ変換して梱包し、画像とZIPの検証を通します。`publish: yes` の場合だけ P7 へ進み、申請メタを検証・承認します。`local-only` は P6 で終了します
 6. P8開始時にアカウント名、販売者ID、登録先を確認・記録し、入力直前にも再照合します。登録入力とプレビューのサマリを確認すると制作完了になり、「制作が完了しました。問題なければ審査リクエストを実施してください。」と表示されます
 
-`text_mode: font` は生成画像と文字を分離し、フォントで決定論的に合成する推奨方式です。`text_mode: ai` はP4とP5で生成AIによる目視確認を行い、結果を添えてP4採用／P5一覧の承認を通常チャットで受けます。文字だけの追加ユーザー検査は不要です。文字領域マスクにより文字内の穴だけを除外し、キャラクター領域の微小穴検査は省略しません。
+文字ありは `text_mode: ai` に統一し、文字は生成AIだけで描きます。フォント埋め込み・後付け合成は廃止しました。文字なしは `text_mode: none` です。キャラクターの画風・配色・性格に合う字形・太さ・色・縁取り・装飾・配置をP4候補で提案し、採用した文字表現とプロンプト保存先をSESSIONのnotesに残してP5全点へ引き継ぎます。`text_mode: ai` はP4とP5で生成AIによる目視確認を行い、結果を添えてP4採用／P5一覧の承認を通常チャットで受けます。文字だけの追加ユーザー検査は不要です。文字領域マスクにより文字内の穴だけを除外し、キャラクター領域の微小穴検査は省略しません。
 
 ログインはユーザー自身で済ませてください。エージェントは ID、パスワード、認証コードを入力しません。
 
@@ -97,7 +97,7 @@ GitHub Actions は、Ubuntu + Python 3.10 で全品質検査を1回実行し、U
 ```powershell
 python scripts/line_stamp.py project --root . list
 python scripts/line_stamp.py project --root . new --slug usagi
-python scripts/line_stamp.py project --root . confirm-p0 --materials received --source photo --count 16 --text yes --text-mode font --character-name サンプルくん --sample-candidates 1 --publish yes
+python scripts/line_stamp.py project --root . confirm-p0 --materials received --source photo --count 16 --text yes --text-mode ai --character-name サンプルくん --sample-candidates 1 --publish yes
 python scripts/line_stamp.py project --root . confirm-design --image refs/design-v01.png --reference refs/source.png --hairstyle "短い髪" --head-ratio 2.2 --clothing "青い上着" --color "#1A2B3C" --eyes "丸い目" --accessories "なし"
 python scripts/line_stamp.py project --root . confirm-three-view --image refs/three-view-v01.png
 python scripts/line_stamp.py project --root . record-learning --gate P5 --kind problem --summary "余白不足" --impact "検証停止" --cause "上端へ寄り過ぎ" --resolution "自動縮小" --candidate "生成時に安全余白を固定"
@@ -120,7 +120,7 @@ python scripts/line_stamp.py project --root . migrate
 python scripts/line_stamp.py project --root . migrate --apply
 ```
 
-`--apply` を明示した場合だけ、同じプロジェクト内にバックアップを作り、各ファイルを同一 filesystem 上で原子的に置換します。捕捉できる途中失敗はバックアップから巻き戻します。SESSION schema v4 への移行ではP1/P2証跡、文字マスク、P8アカウントの項目を未確認状態で追加し、旧P9と審査後状態を制作完了へ意味を保って移します。旧 `adult`、`consent`、`rights` と空の既定値だった `license_proof` は削除します。未知値、不正・重複キー JSON、未来バージョンがある場合は一切書き換えません。
+`--apply` を明示した場合だけ、同じプロジェクト内にバックアップを作り、各ファイルを同一 filesystem 上で原子的に置換します。捕捉できる途中失敗はバックアップから巻き戻します。SESSION schema v5 への移行では、旧ai/none案件と未確定P0の状態・承認を保存します。旧 `font` 案件の移行・制作・梱包・公開前検証は停止し、新しいai案件で通常のゲート承認を伴う再制作を案内します。既存画像・ZIP・承認をAI描画済みへ書き換えません。v3以前の案件では従来どおりP1/P2証跡、文字マスク、P8アカウントの項目を未確認状態で追加し、旧P9と審査後状態を制作完了へ意味を保って移します。旧 `adult`、`consent`、`rights` と空の既定値だった `license_proof` は削除します。未知値、不正・重複キー JSON、未来バージョンがある場合は一切書き換えません。
 
 ## 別のエージェントを追加する
 

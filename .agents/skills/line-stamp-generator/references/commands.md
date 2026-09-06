@@ -7,7 +7,7 @@
 ```powershell
 python scripts/line_stamp.py project --root . list
 python scripts/line_stamp.py project --root . new --slug usagi
-python scripts/line_stamp.py project --root . confirm-p0 --materials received --source photo --count 16 --text yes --text-mode font --character-name サンプルくん --sample-candidates 1 --publish yes
+python scripts/line_stamp.py project --root . confirm-p0 --materials received --source photo --count 16 --text yes --text-mode ai --character-name サンプルくん --sample-candidates 1 --publish yes
 python scripts/line_stamp.py project --root . confirm-design --image refs/design-v01.png --reference refs/source.png --hairstyle "短い黒髪" --head-ratio 2.2 --clothing "青い上着" --color "#1A2B3C" --color "#F4D7C5" --eyes "丸い黒目" --accessories "なし"
 python scripts/line_stamp.py project --root . confirm-three-view --image refs/three-view-v01.png
 python scripts/line_stamp.py project --root . use usagi
@@ -27,41 +27,30 @@ python scripts/line_stamp.py project --root . migrate --apply
 
 ## キャラクター層
 
-背景が既に透過なら `--remove-light-background` を付けない。
-
-```powershell
-python scripts/line_stamp.py preprocess-character projects/usagi/raw/stamp01.png projects/usagi/characters/stamp01.png --remove-light-background --outline 10
-```
-
-`text_mode: ai`（文字が生成画像に焼き込まれている）では穴補正が文字のカウンターを埋めるため `--no-fill-holes` を付ける。`font|none` では付けない。公開 CLI はこの指定、stamp ID、P4/P5、SESSION の枚数・文字方式を照合する。白縁はこの指定の有無にかかわらず外周だけへ追加され、元画像内の閉じた透明領域は変更しない。
+文字あり（ai）の例。背景が既に透過なら `--remove-light-background` を付けない。文字なし（none）では `--no-fill-holes` を外す。
 
 ```powershell
 python scripts/line_stamp.py preprocess-character projects/usagi/raw/stamp01.png projects/usagi/characters/stamp01.png --remove-light-background --outline 10 --no-fill-holes
 ```
 
-この処理は文字合成前だけに使う。全体合成画像へ再適用しない。
+`text_mode: ai`（文字が生成画像に焼き込まれている）では穴補正が文字のカウンターを埋めるため `--no-fill-holes` を付ける。`none` では付けない。公開 CLI はこの指定、stamp ID、P4/P5、SESSION の枚数・文字方式を照合する。白縁はこの指定の有無にかかわらず外周だけへ追加され、元画像内の閉じた透明領域は変更しない。
 
-## 文字合成
+この処理は最終キャンバスへ配置する前だけに使う。全体合成画像へ再適用しない。
 
-[static-manifest.example.json](../assets/static-manifest.example.json) を `projects/usagi/manifest.json` へコピーし、`text_mode`、フォント、色、セリフ、キャラクター画像を設定する。`font` を使う場合は、日本語フォントを `projects/usagi/fonts/` に置く。manifest 内の相対パスは manifest のあるディレクトリを基準に解決される。`items[].text` は両方式で承認済みセリフを一字一句そのまま書く（`ai` では検査の正解として使う）。
+## 生成画像の配置
 
-manifest の `style.text_mode` は SESSION と一致させる。P4 の合成は item 01 だけ、P5 は ID が `1..SESSION count` と完全一致する全点だけを受け付ける。`style.safe_margin` は12〜16、推奨16とし、最終合成後の実測余白が12px未満なら内容を自動縮小する。`ai` は各 item に、最終画像上の文字だけを囲む `text_region: [left, top, right, bottom]` を指定する。
+[static-manifest.example.json](../assets/static-manifest.example.json) を `projects/usagi/manifest.json` へコピーし、`style.text_mode` を文字ありなら `ai`、文字なしなら `none` と明示する。SESSIONと一致させる。フォント合成は廃止した。旧フォント設定と `--text-layer-dir` は拒否される。
 
-`text_mode: font` では文字レイヤーを保存するため `--text-layer-dir` が必須である。
+文字の字形・太さ・色・縁取り・装飾・配置は [text-and-transparency.md](text-and-transparency.md) に従って生成プロンプトへ記述する。P4採用時にSESSIONのnotesへ承認内容とプロンプト保存先を記録し、P5全点で同じ記述を再利用する。manifestの `items[].text` には承認済みセリフを一字一句そのまま記載し、AI目視検査の正解として使う。noneでは空にする。相対パスはmanifestのあるディレクトリ基準とする。
 
-```powershell
-python scripts/line_stamp.py compose-static --manifest projects/usagi/manifest.json --outdir projects/usagi/stamps --character-layer-dir projects/usagi/character-layers --text-layer-dir projects/usagi/text-layers
-```
-
-`text_mode: ai|none` では空の文字レイヤーを作らないため `--text-layer-dir` を渡さない。
+P4の合成はitem 01だけ、P5はIDが `1..SESSION count` と完全一致する全点だけを受け付ける。`style.safe_margin` は12〜16、推奨16とし、最終合成後の実測余白が12px未満なら内容を自動縮小する。aiは各itemに、最終画像上の文字だけを囲む `text_region: [left, top, right, bottom]` を指定する。
 
 ```powershell
 python scripts/line_stamp.py compose-static --manifest projects/usagi/manifest.json --outdir projects/usagi/stamps --character-layer-dir projects/usagi/character-layers
 ```
 
-- `text_mode: font` — フォントで文字を描画する（既定）
-- `text_mode: ai` — 文字を描かず、文字入りのキャラクター画像をそのまま配置する。文字帯の制約と縮小後の穴補正は外れる
-- `text_mode: none` — 文字なし
+- `text_mode: ai` — AIが文字を描き込んだ画像を配置する。文字の再描画や縮小後の穴補正は行わない。
+- `text_mode: none` — 文字なし画像を配置する。
 
 ## 文字検査（`text_mode: ai` のみ）
 
@@ -81,7 +70,7 @@ python scripts/line_stamp.py verify-text --manifest projects/usagi/manifest.json
 - レポートは `review/text-check-vNN.md` と `.json`（schema 3）、文字領域マスクは `text-masks/vNN/` に保存する。既存版を上書きしない
 - 全点一致の結果を添えたP5一覧をユーザーが通常チャットで承認した後、SESSION `text_check: ok` と最新の `text_mask_version` を記録する。文字だけの追加ユーザー検査は不要
 - 画像やmanifest変更時は目視確認をやり直す。P5の最終記録は全点を揃え、変更していない画像の記録は同一ハッシュの場合だけ引き継げる
-- 既存の承認済みschema 2レポートと文字マスクは読み取り互換で維持する。旧OCR結果をAI目視済みへ自動変換しない。再確認時はP5（01候補はP4）へ戻し `text_check: not-run` として新しい目視記録を作り、成果物を再承認する。SESSION schemaの移行は不要
+- 既存の承認済みschema 2レポートと文字マスクは読み取り互換で維持する。旧OCR結果をAI目視済みへ自動変換しない。再確認時はP5（01候補はP4）へ戻し `text_check: not-run` として新しい目視記録を作り、成果物を再承認する。文字証跡自体の移行は不要。SESSIONは別途schema v5への移行を診断する
 - 旧 `--vision-evidence`、`--lang`、`--scale`、`--min-similarity` は廃止。新しい記録には `--visual-review` を使う
 
 ## 確認一覧
@@ -104,9 +93,9 @@ P5 承認後に SESSION を P6 へ進めてから梱包・検証する。`packag
 
 `package-static` はレビュー済み内部正本 `stamps/stampNN.png` を提出用の `submit/NN.png` へ番号対応でコピーする。`submit/` 配下の同一 filesystem 上に一時成果物を完成させてから、管理対象の `main.png` `tab.png` `NN.png` と指定 ZIP だけを置換する。ZIP member は `main.png`、`tab.png`、`01.png`〜`NN.png` だけにする。無関係なファイルやサブディレクトリを削除しない。旧枚数の数値名PNGが残っていれば `validate-pack` が余剰として止める。旧形式の `submit/stampNN.png` は削除せず警告し、ZIPから除外する。
 
-`text_mode: ai` では `--text-mode ai` を付ける。`validate-pack` は最新の版付き文字領域マスクを使い、「口」「日」など文字内の穴だけを除外して、文字領域外の微小穴を検査する。マスク欠落・ハッシュ不一致・キャラクターを過度に覆う広い領域はエラーになる。
+`validate-pack` の既定はai。文字なしでは `--text-mode none` を指定する。`validate-pack` は最新の版付き文字領域マスクを使い、「口」「日」など文字内の穴だけを除外して、文字領域外の微小穴を検査する。マスク欠落・ハッシュ不一致・キャラクターを過度に覆う広い領域はエラーになる。
 
-`validate-pack` は文字の自然なカウンターを切り抜き漏れと誤判定しないよう、内部名 `character-layers/stampNN.png` のキャラクター単独レイヤーへ微小穴検査を行う。提出名 `submit/NN.png` の寸法、偶数幅/高さ、RGB/RGBA、72dpi 以上、透過、容量を確認し、対応するレビュー済み `stamps/stampNN.png` およびZIP内の同名memberとバイト一致することも検査する。
+`validate-pack` はaiでは文字入り最終画像に文字領域マスクを適用し、文字外の微小穴を検査する。noneでは `character-layers/stampNN.png` へ微小穴検査を行う。提出名 `submit/NN.png` の寸法、偶数幅/高さ、RGB/RGBA、72dpi 以上、透過、容量を確認し、対応するレビュー済み `stamps/stampNN.png` およびZIP内の同名memberとバイト一致することも検査する。
 
 ## 公開前チェック
 

@@ -28,7 +28,7 @@ P6 は公開 CLI の `self-test` が PASS し、`validate-pack` が errors=0 に
 - 素材。新規選択後に P0 プロジェクトを作り、正本にする1枚をその `refs/` に置いて `materials: received` とする。既存キャラなら設定画・正面画を優先
 - 枚数: 8/16/24/32/40 のいずれか（LINE規定。他の数は受け付けない）
 - 文字あり/なし
-- 文字ありなら入れ方: `font`（埋め込みフォント。生成モデルによる文字崩れを避ける既定方式）／`ai`（生成AIに描かせる。誤字が出るため検査工程が入る）。`font` でも原文、欠字、可読性は P4/P5 で目視する
+- 文字ありは `ai`（生成AIによる描画のみ）、文字なしは `none` と記録する。文字方式の選択質問はしない。原文との一致・キャラクターとの調和・全点の統一感・縮小時の可読性をP4/P5で目視する
 - キャラ名（申請時のタイトル・説明に使う表示名。実名は使わない）
 - 01の候補生成数: 1〜3（既定1）
 - `publish`: LINE へ審査申請する意図。`yes` または `local-only`（ローカル確認用成果物。LINE 上で配布・利用不可）
@@ -47,8 +47,8 @@ validation / submission / notes
 account_name / seller_id / registration_target / account_confirmed_at
 ```
 
-- `schema_version`: 現行は `4`。旧形式は制作再開前に公開 CLI の `project --root . migrate` で診断する
-- `text_mode`: `font` `ai` `none`（`text: no` のとき）
+- `schema_version`: 現行は `5`。旧形式は制作再開前に公開 CLI の `project --root . migrate` で診断する
+- `text_mode`: `ai`（`text: yes`）／`none`（`text: no`）。未確定P0では `unknown`
 - `text_check`: `not-run` `ok` `failed` `n/a`（`ai` 以外は `n/a`。AIの全点目視一致とP5一覧承認後に更新。文字だけの追加承認は不要）
 - `text_mask_version`: `ai` のP6では最終 `text-check-vNN` と一致する正の版番号。それ以外は `0`
 - `materials`: `pending` `received`
@@ -56,6 +56,6 @@ account_name / seller_id / registration_target / account_confirmed_at
 - `validation`: `not-run` `ok` `failed`
 - `submission`: `not-started` `local-complete` `drafted` `production-complete`
 
-ユーザーの承認、差し戻し理由、文字スタイル、検証結果を `notes` に短く残す。制作中の問題・原因・対処・改善候補は `LEARNINGS.md` へ追記する。被写体の実名はタイトル、説明、提出ファイル名へ使わない。
+ユーザーの承認、差し戻し理由、文字スタイル、検証結果を `notes` に短く残す。文字ありのP4ではキャラクターの画風・配色・性格に合う字形・太さ・色・縁取り・装飾・配置とその理由を候補と一緒に承認する。採用内容とプロンプト保存先をnotesに記録し、P5全点へ同じ記述を引き継ぐ。制作中の問題・原因・対処・改善候補は `LEARNINGS.md` へ追記する。被写体の実名はタイトル、説明、提出ファイル名へ使わない。
 
-旧形式の移行は選択中プロジェクトだけを対象にし、既定を dry-run とする。ユーザーが変更予定を確認して `--apply` を明示した場合だけ、バックアップを作り、各ファイルを同一 filesystem 上で原子的に置換する。捕捉できる途中失敗は巻き戻す。v4 への移行では新しい証跡・アカウント項目を未確認値で追加し、旧P9をP8へ、旧 `requested|approved|rejected|released` を `production-complete` へ意味を保って移す。廃止済みの `adult`、`consent`、`rights` と、空の既定値だった `license_proof` は削除し、ユーザーが提示済みの任意資料は維持する。欠落した `materials` は P0 なら `pending`、P1 以降なら `refs/` の読取可能な非空素材を確認できた場合だけ `received` にする。未知値・矛盾、不正・重複キー JSON、未来バージョンがあれば、全ファイルを未変更のまま停止する。
+旧形式の移行は選択中プロジェクトだけを対象にし、既定を dry-run とする。ユーザーが変更予定を確認して `--apply` を明示した場合だけ、バックアップを作り、各ファイルを同一 filesystem 上で原子的に置換する。捕捉できる途中失敗は巻き戻す。v5への移行ではai/noneと未確定P0の状態・承認を維持する。旧font案件は自動変換せず、元の画像・ZIP・承認を保存して新しいai案件で通常のゲートを経て再制作する手順を案内し、移行・制作・梱包・公開前検証を停止する。v3以前では従来どおり新しい証跡・アカウント項目を未確認値で追加し、旧P9をP8へ、旧 `requested|approved|rejected|released` を `production-complete` へ意味を保って移す。廃止済みの `adult`、`consent`、`rights` と、空の既定値だった `license_proof` は削除し、ユーザーが提示済みの任意資料は維持する。欠落した `materials` は P0 なら `pending`、P1 以降なら `refs/` の読取可能な非空素材を確認できた場合だけ `received` にする。未知値・矛盾、不正・重複キー JSON、未来バージョンがあれば、全ファイルを未変更のまま停止する。

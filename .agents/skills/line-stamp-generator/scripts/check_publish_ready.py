@@ -32,7 +32,7 @@ DESCRIPTION_RANGE = (10, 160)
 CREATOR_MAX = 50
 COPYRIGHT_MAX = 50
 MAX_TAGS_PER_STAMP = 9
-SESSION_SCHEMA_VERSION = "4"
+SESSION_SCHEMA_VERSION = "5"
 SUBMISSION_SCHEMA_VERSION = 3
 PROJECT_SLUG_RE = re.compile(r"[a-z0-9][a-z0-9-]{1,39}")
 WINDOWS_RESERVED_NAMES = {
@@ -477,7 +477,7 @@ def check_session_state(
     """Require a complete P7 state instead of accepting a few isolated flags."""
     if session.get("schema_version") != SESSION_SCHEMA_VERSION:
         errors.append(
-            "SESSION schema_version must be 4; inspect the active project with public command "
+            "SESSION schema_version must be 5; inspect the active project with public command "
             "`project --root . migrate`"
         )
     deprecated = sorted(DEPRECATED_SESSION_KEYS.intersection(session))
@@ -521,9 +521,11 @@ def check_session_state(
 
     text = session.get("text", "missing")
     text_mode = session.get("text_mode", "missing")
-    if (text, text_mode) not in {("yes", "font"), ("yes", "ai"), ("no", "none")}:
+    if text_mode == "font":
+        errors.append("text_mode=font is no longer supported; preserve this project and create a new ai project for regeneration and normal gate approvals")
+    if (text, text_mode) not in {("yes", "ai"), ("no", "none")}:
         errors.append(
-            "SESSION text/text_mode must be yes/font, yes/ai, or no/none "
+            "SESSION text/text_mode must be yes/ai or no/none "
             f"(found {text}/{text_mode})"
         )
     text_check = session.get("text_check", "missing")

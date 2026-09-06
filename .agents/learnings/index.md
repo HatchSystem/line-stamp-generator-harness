@@ -2,6 +2,7 @@
 
 | 日付 | 要約 | 詳細 |
 |---|---|---|
+| 2026-09-06 | 文字描画をAIへ統一し、キャラクターに合う文字表現をP4から全点へ引き継ぐ。旧作品の描画方式と承認を再ラベルしない | [pipeline.md](pipeline.md#2026-09-06-ai-only-character-lettering) |
 | 2026-09-06 | 【最新指示】質問UIは使用せず、処理を区切って保存した後に通常チャットで質問し、回答を待つ | [workflow.md](workflow.md#2026-09-06-question-timing-boundary) |
 | 2026-09-06 | AI文字は生成AIの目視記録へ簡素化し、旧証跡の読み取り互換と画像品質検証を維持する | [pipeline.md](pipeline.md#2026-09-06-ai-visual-text-review) |
 | 2026-09-06 | 【同日追加指示あり】対話変更は共通手順・製品アダプタ・構成検査を同時に揃える | [workflow.md](workflow.md#2026-09-06-chat-dialogue-contract) |

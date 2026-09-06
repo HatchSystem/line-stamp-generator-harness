@@ -7,7 +7,7 @@ description: P6のmain/tab生成、ZIP梱包、構造・画像検証を担当し
 
 ## 必要な入力
 
-- `projects/<slug>/`、`count`（8/16/24/32/40）、`text_mode`（font/ai/none）、ZIP名
+- `projects/<slug>/`、`count`（8/16/24/32/40）、`text_mode`（ai/none）、ZIP名
 
 ## 実行
 

@@ -380,7 +380,7 @@ def require_review_evidence(project_dir: Path, count: int, version: int) -> None
 
 
 def load_static_session(project_dir: Path, allowed_gates: set[str]) -> dict[str, str]:
-    """Load an unambiguous schema-v4 SESSION and validate its static-pack fields."""
+    """Load an unambiguous schema-v5 SESSION and validate its static-pack fields."""
     session_path = project_dir / "SESSION.md"
     if session_path.is_symlink() or not session_path.is_file():
         raise ValueError("active project SESSION.md must be a regular non-symlink file")
@@ -399,8 +399,10 @@ def load_static_session(project_dir: Path, allowed_gates: set[str]) -> dict[str,
             raise ValueError(f"SESSION key {key!r} is duplicated (line {line_number})")
         values[key] = value.strip()
 
-    if values.get("schema_version") != "4":
-        raise ValueError("SESSION schema_version must be 4")
+    if values.get("text_mode") == "font":
+        raise ValueError("text_mode=font is no longer supported; preserve this project and create a new ai project for regeneration and normal gate approvals")
+    if values.get("schema_version") != "5":
+        raise ValueError("SESSION schema_version must be 5; run project migrate first")
     deprecated = sorted(DEPRECATED_SESSION_KEYS.intersection(values))
     if deprecated:
         raise ValueError(
@@ -425,7 +427,7 @@ def load_static_session(project_dir: Path, allowed_gates: set[str]) -> dict[str,
     count = int(count_value)
     text = values.get("text")
     text_mode = values.get("text_mode")
-    if (text == "yes" and text_mode not in {"font", "ai"}) or (
+    if (text == "yes" and text_mode != "ai") or (
         text == "no" and text_mode != "none"
     ):
         raise ValueError(

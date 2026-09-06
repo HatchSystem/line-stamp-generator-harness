@@ -340,7 +340,7 @@ def main() -> None:
     parser.add_argument("--character-dir", required=True, help="Character-only layers from the same project")
     parser.add_argument("--max-micro-hole", type=int, default=64)
     parser.add_argument("--min-margin", type=int, default=12)
-    parser.add_argument("--text-mode", choices=("font", "ai", "none"), default="font", help="ai: versioned text masks exclude glyph counters from hole checks")
+    parser.add_argument("--text-mode", choices=("ai", "none"), default="ai", help="font is no longer supported; ai (default): versioned text masks exclude glyph counters from hole checks")
     parser.add_argument("--zip", required=True)
     args = parser.parse_args()
 
