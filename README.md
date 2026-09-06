@@ -97,7 +97,7 @@ GitHub Actions は、Ubuntu + Python 3.10 で全品質検査を1回実行し、U
 ```powershell
 python scripts/line_stamp.py project --root . list
 python scripts/line_stamp.py project --root . new --slug usagi
-python scripts/line_stamp.py project --root . confirm-p0 --materials received --source photo --count 16 --text yes --text-mode font --character-name ハッチくん --sample-candidates 1 --publish yes
+python scripts/line_stamp.py project --root . confirm-p0 --materials received --source photo --count 16 --text yes --text-mode font --character-name サンプルくん --sample-candidates 1 --publish yes
 python scripts/line_stamp.py project --root . confirm-design --image refs/design-v01.png --reference refs/source.png --hairstyle "短い髪" --head-ratio 2.2 --clothing "青い上着" --color "#1A2B3C" --eyes "丸い目" --accessories "なし"
 python scripts/line_stamp.py project --root . confirm-three-view --image refs/three-view-v01.png
 python scripts/line_stamp.py project --root . record-learning --gate P5 --kind problem --summary "余白不足" --impact "検証停止" --cause "上端へ寄り過ぎ" --resolution "自動縮小" --candidate "生成時に安全余白を固定"

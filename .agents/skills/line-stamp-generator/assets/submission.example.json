@@ -2,15 +2,15 @@
   "schema_version": 3,
   "count": 16,
   "title": {
-    "ja": "ハッチくんの毎日スタンプ",
-    "en": "Hatch-kun Daily Stickers"
+    "ja": "サンプルくんの毎日スタンプ",
+    "en": "Sample-kun Daily Stickers"
   },
   "description": {
-    "ja": "あいさつや返事に使えるハッチくんの日常スタンプです。家族や友だちとの会話にどうぞ。",
-    "en": "Everyday stickers of Hatch-kun for greetings and quick replies to family and friends."
+    "ja": "あいさつや返事に使えるサンプルくんの日常スタンプです。家族や友だちとの会話にどうぞ。",
+    "en": "Everyday stickers of Sample-kun for greetings and quick replies to family and friends."
   },
-  "creator_name": "HatchWorks",
-  "copyright": "2026HatchWorks",
+  "creator_name": "ExampleCreator",
+  "copyright": "2026ExampleCreator",
   "price_jpy": 120,
   "price_confirmed": false,
   "sales_area": "all",

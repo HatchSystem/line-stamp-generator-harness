@@ -575,7 +575,7 @@ def main() -> None:
         "text_check": "n/a",
         "text_mask_version": "0",
         "gate": "P7",
-        "character": "Hatch",
+        "character": "Sample-kun",
         "publish": "yes",
         "validation": "ok",
         "review_version": "1",
@@ -781,7 +781,7 @@ def main() -> None:
             "count": 16,
             "text": "yes",
             "text_mode": "font",
-            "character_name": "Hatch",
+            "character_name": "Sample-kun",
             "sample_candidates": 1,
             "publish": "yes",
         }
@@ -818,7 +818,7 @@ def main() -> None:
             assert cmd_confirm_p0(Namespace(**base_intake)) == 0
         confirmed = parse_session_for_migration(session_path.read_text(encoding="utf-8"))[0]
         assert confirmed["gate"] == "P1"
-        assert confirmed["character"] == "Hatch"
+        assert confirmed["character"] == "Sample-kun"
         assert not any(key in confirmed for key in ("adult", "consent", "rights"))
         after_confirmation = session_path.read_bytes()
         with redirect_stdout(sink), redirect_stderr(sink):

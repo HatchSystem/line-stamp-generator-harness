@@ -7,7 +7,7 @@
 ```powershell
 python scripts/line_stamp.py project --root . list
 python scripts/line_stamp.py project --root . new --slug usagi
-python scripts/line_stamp.py project --root . confirm-p0 --materials received --source photo --count 16 --text yes --text-mode font --character-name ハッチくん --sample-candidates 1 --publish yes
+python scripts/line_stamp.py project --root . confirm-p0 --materials received --source photo --count 16 --text yes --text-mode font --character-name サンプルくん --sample-candidates 1 --publish yes
 python scripts/line_stamp.py project --root . confirm-design --image refs/design-v01.png --reference refs/source.png --hairstyle "短い黒髪" --head-ratio 2.2 --clothing "青い上着" --color "#1A2B3C" --color "#F4D7C5" --eyes "丸い黒目" --accessories "なし"
 python scripts/line_stamp.py project --root . confirm-three-view --image refs/three-view-v01.png
 python scripts/line_stamp.py project --root . use usagi
